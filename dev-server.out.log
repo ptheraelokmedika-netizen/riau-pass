@@ -1,0 +1,12 @@
+
+> pass-riau-event-manager@1.0.0 dev
+> next dev --port 3010
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3010
+
+ ✓ Starting...
+ ✓ Ready in 1512ms
+ ○ Compiling / ...
+ ✓ Compiled / in 7.8s (896 modules)
+ GET / 200 in 8135ms
