@@ -10,3 +10,4 @@
  ○ Compiling / ...
  ✓ Compiled / in 7.8s (896 modules)
  GET / 200 in 8135ms
+ GET / 200 in 67ms
