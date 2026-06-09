@@ -47,7 +47,7 @@ import {
   vendorBenefits as seedBenefits,
   vendors as seedVendors
 } from "@/lib/sample-data";
-import { isSupabaseConfigured } from "@/lib/supabase";
+import { testSupabaseConnection, type SupabaseConnectionStatus } from "@/lib/supabase";
 import { rupiah, waUrl } from "@/lib/utils";
 import type { ActivityLog, Booth, CommitteeMember, EventSettings, FileRequirement, Invoice, Participant, Payment, Vendor, VendorBenefit } from "@/lib/types";
 
@@ -264,6 +264,10 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [selectedReport, setSelectedReport] = useState(reportOptions[0]);
   const [detailVendorId, setDetailVendorId] = useState<string | null>(null);
+  const [supabaseStatus, setSupabaseStatus] = useState<SupabaseConnectionStatus>({
+    state: "checking",
+    message: "Checking Supabase connection..."
+  });
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -276,6 +280,16 @@ export default function Home() {
   useEffect(() => {
     if (loaded) localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   }, [data, loaded]);
+
+  useEffect(() => {
+    let active = true;
+    testSupabaseConnection().then((status) => {
+      if (active) setSupabaseStatus(status);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const log = (action: string, entityType: string, entityName: string, notes = "") => {
     setData((current) => ({
@@ -482,11 +496,7 @@ export default function Home() {
         </div>
       </header>
 
-      {!isSupabaseConfigured && (
-        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
-          Mode lokal aktif. Hubungkan Supabase untuk sinkronisasi online.
-        </div>
-      )}
+      <ConnectionBanner status={supabaseStatus} />
 
       <div className="mx-auto grid h-[calc(100vh-118px)] max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[260px_1fr]">
         <aside className="no-print min-h-0 overflow-y-auto pb-8">
@@ -551,6 +561,31 @@ export default function Home() {
 
 function SectionTitle({ title, subtitle, action }: { title: string; subtitle?: string; action?: React.ReactNode }) {
   return <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><h2 className="text-xl font-bold text-emeraldDeep">{title}</h2>{subtitle && <p className="mt-1 text-sm text-slate-500">{subtitle}</p>}</div>{action}</div>;
+}
+
+function ConnectionBanner({ status }: { status: SupabaseConnectionStatus }) {
+  if (status.state === "connected") {
+    return (
+      <div className="border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-900">
+        <strong>Supabase connected.</strong> Environment variables are present and the `events` table is reachable.
+      </div>
+    );
+  }
+
+  if (status.state === "checking") {
+    return (
+      <div className="border-b border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-900">
+        Checking Supabase connection...
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-950">
+      <strong>Mode lokal aktif.</strong> Hubungkan Supabase untuk sinkronisasi online.
+      <span className="ml-2 rounded bg-white/70 px-2 py-0.5 font-mono text-xs">Reason: {status.reason}</span>
+    </div>
+  );
 }
 
 function ActionList({ items }: { items: string[] }) {
