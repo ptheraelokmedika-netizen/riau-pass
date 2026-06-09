@@ -20,8 +20,8 @@ export const eventSettings: EventSettings = {
   symposium: "Symposium & Exhibition: 14-15 Agustus 2026, Hotel Grand Elite Pekanbaru",
   workshop: "Workshop: 16 Agustus 2026, Universitas Abdurrab",
   exhibition: "Exhibition: 14-15 Agustus 2026, Hotel Grand Elite Pekanbaru",
-  bankAccount: "Bank Mandiri 123-00-4567890-1 a.n. Panitia PASS RIAU",
-  contactPerson: "dr. Sarah Nadia, Sp.D.V.E",
+  bankAccount: "BANK BNI 2056245056 a/n ISAM PERDESTI CABANG RIAU",
+  contactPerson: "dr. Moriza Lesmana, M.Biomed (AAM)",
   email: "sekretariat@passriau.id",
   instagram: "@passriau",
   secretariat: "Sekretariat PERDESTI Riau, Pekanbaru",
@@ -65,7 +65,7 @@ eventSettings.promoNotes = "Promo group registration 5 peserta dokter berbayar m
 
 export const committeeMembers: CommitteeMember[] = [
   { id: "cm-1", name: "dr. Maya Pratiwi, Sp.D.V.E", role: "Ketua Panitia", whatsapp: "081276540001", email: "maya@passriau.id", active: true, accessRole: "Owner" },
-  { id: "cm-2", name: "dr. Sarah Nadia, Sp.D.V.E", role: "Finance/Bendahara", whatsapp: "081276540002", email: "finance@passriau.id", active: true, accessRole: "Finance/Bendahara" },
+  { id: "cm-2", name: "dr. Moriza Lesmana, M.Biomed (AAM)", role: "Finance/Bendahara", whatsapp: "081276540002", email: "finance@passriau.id", active: true, accessRole: "Finance/Bendahara" },
   { id: "cm-3", name: "Rina Anggraini", role: "Sponsorship", whatsapp: "081276540003", email: "sponsor@passriau.id", active: true, accessRole: "Sponsorship" },
   { id: "cm-4", name: "Fahri Ramadhan", role: "Registration", whatsapp: "081276540004", email: "registrasi@passriau.id", active: true, accessRole: "Registration" },
   { id: "cm-5", name: "Dewi Lestari", role: "Booth Manager", whatsapp: "081276540005", email: "booth@passriau.id", active: true, accessRole: "Booth Manager" }
@@ -87,7 +87,7 @@ export const vendors: Vendor[] = [
     speakerName: "dr. Reza Ardiansyah",
     handler: "Rina Anggraini",
     registeredBy: "Rina Anggraini",
-    receivedBy: "dr. Sarah Nadia, Sp.D.V.E",
+    receivedBy: "dr. Moriza Lesmana, M.Biomed (AAM)",
     dpDeadline: "2026-06-30",
     finalDeadline: "2026-07-30",
     status: "Partially Paid",
@@ -107,7 +107,7 @@ export const vendors: Vendor[] = [
     speakerSlot: true,
     handler: "Rina Anggraini",
     registeredBy: "Rina Anggraini",
-    receivedBy: "dr. Sarah Nadia, Sp.D.V.E",
+    receivedBy: "dr. Moriza Lesmana, M.Biomed (AAM)",
     dpDeadline: "2026-06-25",
     finalDeadline: "2026-07-30",
     status: "Booked",
@@ -127,7 +127,7 @@ export const vendors: Vendor[] = [
     speakerSlot: false,
     handler: "Rina Anggraini",
     registeredBy: "Rina Anggraini",
-    receivedBy: "dr. Sarah Nadia, Sp.D.V.E",
+    receivedBy: "dr. Moriza Lesmana, M.Biomed (AAM)",
     dpDeadline: "2026-07-05",
     finalDeadline: "2026-07-30",
     status: "Fully Paid",
@@ -163,7 +163,7 @@ export const fileRequirements: FileRequirement[] = [
   { id: "file-2", vendorId: "ven-1", name: "Speaker material", required: true, uploaded: false, dueDate: "2026-07-20", status: "Missing", notes: "Butuh follow-up" },
   { id: "file-3", vendorId: "ven-2", name: "Payment proof", required: true, uploaded: false, dueDate: "2026-06-25", status: "Missing", notes: "Menunggu DP" },
   { id: "file-4", vendorId: "ven-2", name: "Brochure for kit", required: true, uploaded: true, dueDate: "2026-08-01", status: "Under Review", reviewedBy: "Rina Anggraini", notes: "Cek ukuran file" },
-  { id: "file-5", vendorId: "ven-3", name: "Signed sponsor agreement", required: true, uploaded: true, dueDate: "2026-07-15", status: "Approved", reviewedBy: "dr. Sarah Nadia, Sp.D.V.E", notes: "Sudah arsip" }
+  { id: "file-5", vendorId: "ven-3", name: "Signed sponsor agreement", required: true, uploaded: true, dueDate: "2026-07-15", status: "Approved", reviewedBy: "dr. Moriza Lesmana, M.Biomed (AAM)", notes: "Sudah arsip" }
 ];
 
 export const participants: Participant[] = [
@@ -193,7 +193,7 @@ export const invoices: Invoice[] = [
     lastPaymentDate: "2026-06-18",
     status: "Partially Paid",
     registeredBy: "Rina Anggraini",
-    receivedBy: "dr. Sarah Nadia, Sp.D.V.E",
+    receivedBy: "dr. Moriza Lesmana, M.Biomed (AAM)",
     handledBy: "Rina Anggraini",
     notes: "Termasuk booth A01-A02 dan benefit platinum.",
     vendorId: "ven-1"
@@ -210,7 +210,7 @@ export const invoices: Invoice[] = [
     dpPaid: 0,
     status: "Sent",
     registeredBy: "Rina Anggraini",
-    receivedBy: "dr. Sarah Nadia, Sp.D.V.E",
+    receivedBy: "dr. Moriza Lesmana, M.Biomed (AAM)",
     handledBy: "Rina Anggraini",
     notes: "Follow-up bukti DP.",
     vendorId: "ven-2"
@@ -224,8 +224,8 @@ invoices.forEach((invoice) => {
 });
 
 export const payments: Payment[] = [
-  { id: "pay-1", invoiceId: "inv-1", date: "2026-06-18", amount: 37500000, method: "Transfer Bank", receivingBank: "Bank Mandiri", senderName: "PT Dermavita Estetika", receivedBy: "dr. Sarah Nadia, Sp.D.V.E", verifiedBy: "dr. Sarah Nadia, Sp.D.V.E", verificationStatus: "Verified", notes: "DP 50%" },
-  { id: "pay-2", invoiceId: "inv-2", date: "2026-06-20", amount: 25000000, method: "Transfer Bank", receivingBank: "Bank Mandiri", senderName: "CV Aesthetic Nusantara", receivedBy: "dr. Sarah Nadia, Sp.D.V.E", verificationStatus: "Pending", notes: "Menunggu verifikasi bukti transfer" }
+  { id: "pay-1", invoiceId: "inv-1", date: "2026-06-18", amount: 37500000, method: "Transfer Bank", receivingBank: "Bank Mandiri", senderName: "PT Dermavita Estetika", receivedBy: "dr. Moriza Lesmana, M.Biomed (AAM)", verifiedBy: "dr. Moriza Lesmana, M.Biomed (AAM)", verificationStatus: "Verified", notes: "DP 50%" },
+  { id: "pay-2", invoiceId: "inv-2", date: "2026-06-20", amount: 25000000, method: "Transfer Bank", receivingBank: "Bank Mandiri", senderName: "CV Aesthetic Nusantara", receivedBy: "dr. Moriza Lesmana, M.Biomed (AAM)", verificationStatus: "Pending", notes: "Menunggu verifikasi bukti transfer" }
 ];
 
 payments.forEach((payment) => {
@@ -239,7 +239,7 @@ payments.forEach((payment) => {
 
 export const activityLogs: ActivityLog[] = [
   { id: "log-1", user: "Rina Anggraini", action: "Created vendor", entityType: "Vendor", entityName: "PT Dermavita Estetika", timestamp: "2026-06-10T09:00:00+07:00", notes: "Sponsor platinum masuk pipeline" },
-  { id: "log-2", user: "dr. Sarah Nadia, Sp.D.V.E", action: "Verified payment", entityType: "Payment", entityName: "INV/PASS-RIAU/2026/001", timestamp: "2026-06-18T15:20:00+07:00", notes: "DP terverifikasi" },
+  { id: "log-2", user: "dr. Moriza Lesmana, M.Biomed (AAM)", action: "Verified payment", entityType: "Payment", entityName: "INV/PASS-RIAU/2026/001", timestamp: "2026-06-18T15:20:00+07:00", notes: "DP terverifikasi" },
   { id: "log-3", user: "Dewi Lestari", action: "Assigned booth", entityType: "Booth", entityName: "A01-A02", timestamp: "2026-06-18T16:10:00+07:00", notes: "Booth platinum dikunci" }
 ];
 

@@ -1,1 +1,6 @@
  ⚠ Disabling outputFileTracing will not be an option in the next major version. Please report any issues you may be experiencing to https://github.com/vercel/next.js/issues
+ ⚠ ./app/page.tsx
+Attempted import error: 'isSupabaseConfigured' is not exported from '@/lib/supabase' (imported as 'isSupabaseConfigured').
+
+Import trace for requested module:
+./app/page.tsx
