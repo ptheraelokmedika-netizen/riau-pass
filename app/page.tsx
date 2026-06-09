@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   Archive,
@@ -48,6 +48,8 @@ import {
   vendors as seedVendors
 } from "@/lib/sample-data";
 import { testSupabaseConnection, type SupabaseConnectionStatus } from "@/lib/supabase";
+import { clearSupabaseDemoRecords, deleteSupabaseRecord, fetchSupabaseAppData, upsertSupabaseRecord } from "@/src/lib/data-service";
+import { deleteFile, getPublicUrl, uploadFile } from "@/src/lib/storage";
 import { rupiah, waUrl } from "@/lib/utils";
 import type { ActivityLog, Booth, CommitteeMember, EventSettings, FileRequirement, Invoice, Participant, Payment, Vendor, VendorBenefit } from "@/lib/types";
 
@@ -61,6 +63,10 @@ type DocumentRecord = {
   createdAt: string;
   notes: string;
   demo?: boolean;
+  bucket?: string;
+  storagePath?: string;
+  publicUrl?: string;
+  uploadedAt?: string;
 };
 type SponsorLetter = {
   id: string;
@@ -140,6 +146,26 @@ const reportOptions = [
   "Promo usage report"
 ];
 
+const invoiceTargetTypes = ["Vendor / Sponsor", "Participant", "Group Registration", "Symposium Only", "Workshop Only", "Booth Only", "Custom / Other"] as const;
+
+const pricingRules = [
+  { category: "Member PERDESTI", product: "Symposium", period: "Early bird", start: "2026-01-01", end: "2026-06-30", price: 1000000, active: true, notes: "Member early bird" },
+  { category: "Member PERDESTI", product: "Symposium", period: "Regular", start: "2026-07-01", end: "2026-08-14", price: 1500000, active: true, notes: "Member regular" },
+  { category: "Member PERDESTI", product: "Symposium", period: "On-site", start: "2026-08-15", end: "2026-08-16", price: 2000000, active: true, notes: "Member onsite" },
+  { category: "Non-member PERDESTI", product: "Symposium", period: "Early bird", start: "2026-01-01", end: "2026-06-30", price: 1500000, active: true, notes: "Non-member early bird" },
+  { category: "Non-member PERDESTI", product: "Symposium", period: "Regular", start: "2026-07-01", end: "2026-08-14", price: 2000000, active: true, notes: "Non-member regular" },
+  { category: "Non-member PERDESTI", product: "Symposium", period: "On-site", start: "2026-08-15", end: "2026-08-16", price: 2500000, active: true, notes: "Non-member onsite" },
+  { category: "Dokter Umum", product: "Symposium", period: "Early bird", start: "2026-01-01", end: "2026-06-30", price: 1500000, active: true, notes: "Dokter umum early bird" },
+  { category: "Dokter Umum", product: "Symposium", period: "Regular", start: "2026-07-01", end: "2026-08-14", price: 2000000, active: true, notes: "Dokter umum regular" },
+  { category: "Internship / Koas / Mahasiswa", product: "Symposium", period: "All period", start: "2026-01-01", end: "2026-08-16", price: 500000, active: true, notes: "Student price" },
+  { category: "Resident / PPDS", product: "Symposium", period: "Regular", start: "2026-01-01", end: "2026-08-16", price: 1000000, active: true, notes: "Resident price" },
+  { category: "Workshop Participant", product: "Workshop", period: "Regular", start: "2026-01-01", end: "2026-08-16", price: 2500000, active: true, notes: "Workshop default" },
+  { category: "Booth", product: "Booth", period: "Regular", start: "2026-01-01", end: "2026-08-16", price: 15000000, active: true, notes: "Booth only default" },
+  { category: "Silver", product: "Sponsor package", period: "Regular", start: "2026-01-01", end: "2026-08-16", price: 20000000, active: true, notes: "Sponsor silver" },
+  { category: "Gold", product: "Sponsor package", period: "Regular", start: "2026-01-01", end: "2026-08-16", price: 30000000, active: true, notes: "Sponsor gold" },
+  { category: "Platinum", product: "Sponsor package", period: "Regular", start: "2026-01-01", end: "2026-08-16", price: 55000000, active: true, notes: "Sponsor platinum" }
+];
+
 function withDemo<T extends { id: string }>(rows: T[]) {
   return rows.map((row) => ({ ...row, demo: true }));
 }
@@ -194,6 +220,24 @@ function initialData(): AppData {
   };
 }
 
+function emptyData(): AppData {
+  return {
+    event: { ...seedEvent, logos: [] },
+    committee: [],
+    vendors: [],
+    participants: [],
+    booths: [],
+    benefits: [],
+    files: [],
+    invoices: [],
+    payments: [],
+    documents: [],
+    letters: [],
+    messages: [],
+    logs: []
+  };
+}
+
 function uid(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -210,6 +254,31 @@ function pendingPaid(invoiceId: string, payments: Payment[]) {
   return payments.filter((payment) => payment.invoiceId === invoiceId && payment.verificationStatus === "Pending").reduce((sum, payment) => sum + Number(payment.amount), 0);
 }
 
+function findPricing(category: string, product: string, invoiceDate: string) {
+  const date = new Date(invoiceDate || todayIdDate());
+  return pricingRules.find((rule) => rule.active && rule.category === category && rule.product === product && date >= new Date(rule.start) && date <= new Date(rule.end))
+    ?? pricingRules.find((rule) => rule.active && rule.category === category && rule.product === product)
+    ?? pricingRules.find((rule) => rule.active && rule.product === product);
+}
+
+function derivePaymentStatus(invoice: Invoice, payments: Payment[]) {
+  const total = invoiceTotal(invoice);
+  const paid = verifiedPaid(invoice.id, payments);
+  if (paid >= total && total > 0) return "Paid";
+  if (paid > 0 && paid >= total * 0.5) return "Partially Paid";
+  if (paid > 0) return "DP Paid";
+  if (invoice.dueDate && new Date(invoice.dueDate) < new Date()) return "Overdue";
+  return "Unpaid";
+}
+
+function deriveVerificationStatus(invoice: Invoice, payments: Payment[]) {
+  const related = payments.filter((payment) => payment.invoiceId === invoice.id);
+  if (!related.length) return "No Payment";
+  if (related.some((payment) => payment.verificationStatus === "Pending")) return "Pending Verification";
+  if (related.some((payment) => payment.verificationStatus === "Rejected")) return "Rejected";
+  return "Verified";
+}
+
 function calcInvoiceStatus(invoice: Invoice, payments: Payment[]) {
   const paid = verifiedPaid(invoice.id, payments);
   const total = invoiceTotal(invoice);
@@ -217,6 +286,14 @@ function calcInvoiceStatus(invoice: Invoice, payments: Payment[]) {
   if (paid > 0 && paid >= total * 0.5) return "Partially Paid";
   if (paid > 0) return "DP Paid";
   return invoice.status === "Sent" ? "Sent" : "Draft";
+}
+
+function invoiceTargetLabel(invoice: Invoice) {
+  return invoice.targetType ?? (invoice.vendorId ? "Vendor / Sponsor" : "Custom / Other");
+}
+
+function invoiceTargetSearch(invoice: Invoice) {
+  return `${invoice.number} ${invoice.billTo} ${invoice.targetName ?? ""} ${invoice.category ?? ""} ${invoice.registrationType ?? ""}`.toLowerCase();
 }
 
 function tone(status: string) {
@@ -255,7 +332,7 @@ function todayIdDate() {
 }
 
 export default function Home() {
-  const [data, setData] = useState<AppData>(() => initialData());
+  const [data, setData] = useState<AppData>(() => emptyData());
   const [loaded, setLoaded] = useState(false);
   const [active, setActive] = useState<ModuleKey>("dashboard");
   const [modal, setModal] = useState<ModalState>(null);
@@ -270,16 +347,8 @@ export default function Home() {
   });
 
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      setData(JSON.parse(saved) as AppData);
-    }
-    setLoaded(true);
-  }, []);
-
-  useEffect(() => {
-    if (loaded) localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [data, loaded]);
+    if (loaded && supabaseStatus.state !== "connected") localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }, [data, loaded, supabaseStatus.state]);
 
   useEffect(() => {
     let active = true;
@@ -290,6 +359,30 @@ export default function Home() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (supabaseStatus.state === "checking") return;
+    if (supabaseStatus.state === "connected") {
+      fetchSupabaseAppData(seedEvent)
+        .then((supabaseData) => {
+          setData((current) => ({
+            ...current,
+            ...supabaseData,
+            documents: supabaseData.documents as DocumentRecord[],
+            letters: [],
+            messages: []
+          }));
+          setLoaded(true);
+        })
+        .catch((error) => {
+          setSupabaseStatus({ state: "local", message: "Mode lokal aktif", reason: error instanceof Error ? error.message : "Supabase data fetch failed" });
+        });
+      return;
+    }
+    const saved = localStorage.getItem(STORAGE_KEY);
+    setData(saved ? JSON.parse(saved) as AppData : emptyData());
+    setLoaded(true);
+  }, [supabaseStatus.state]);
 
   const log = (action: string, entityType: string, entityName: string, notes = "") => {
     setData((current) => ({
@@ -331,9 +424,14 @@ export default function Home() {
 
   const openModal = (key: EditableKey, mode: "add" | "edit" | "view", id?: string) => setModal({ key, mode, id });
 
-  const deleteRecord = (key: EditableKey, id: string, name: string) => {
+  const deleteRecord = async (key: EditableKey, id: string, name: string) => {
     if (!window.confirm(`Yakin ingin menghapus/cancel "${name}"?`)) return;
-    saveData((current) => removeByKey(current, key, id), "Data berhasil dihapus.", ["Deleted record", key, name]);
+    try {
+      if (supabaseStatus.state === "connected") await deleteSupabaseRecord(key, id);
+      saveData((current) => removeByKey(current, key, id), supabaseStatus.state === "connected" ? "Data berhasil dihapus dari Supabase." : "Data berhasil dihapus.", ["Deleted record", key, name]);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Gagal menghapus data Supabase.");
+    }
   };
 
   const archiveDocument = (name: string, type: string, relatedName: string, notes = "") => {
@@ -394,7 +492,7 @@ export default function Home() {
     const { jsPDF } = await import("jspdf");
     await import("jspdf-autotable");
     const doc = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
-    drawPdfHeader(doc, data.event, kind === "invoice" ? "INVOICE" : kind === "receipt" ? "BUKTI PEMBAYARAN / RECEIPT" : kind === "agreement" ? "SURAT PERNYATAAN KESANGGUPAN BERPARTISIPASI" : kind === "benefit" ? "VENDOR BENEFIT CHECKLIST" : selectedReport.toUpperCase());
+    await drawPdfHeader(doc, data.event, kind === "invoice" ? "INVOICE" : kind === "receipt" ? "BUKTI PEMBAYARAN / RECEIPT" : kind === "agreement" ? "SURAT PERNYATAAN KESANGGUPAN BERPARTISIPASI" : kind === "benefit" ? "VENDOR BENEFIT CHECKLIST" : selectedReport.toUpperCase());
 
     let filename = "pass-riau-document.pdf";
     let relatedName = data.event.name;
@@ -404,21 +502,21 @@ export default function Home() {
       const vendor = data.vendors.find((item) => item.id === invoice.vendorId);
       relatedName = invoice.billTo;
       filename = `${invoice.number.replaceAll("/", "-")}.pdf`;
-      drawInvoicePdf(doc, data, invoice, vendor);
+      await drawInvoicePdf(doc, data, invoice, vendor);
     }
     if (kind === "receipt") {
       const payment = data.payments.find((item) => item.id === id) ?? data.payments[0];
       const invoice = data.invoices.find((item) => item.id === payment.invoiceId) ?? data.invoices[0];
       relatedName = payment.senderName;
       filename = `Receipt-${payment.id}.pdf`;
-      drawReceiptPdf(doc, data, payment, invoice);
+      await drawReceiptPdf(doc, data, payment, invoice);
     }
     if (kind === "agreement") {
       const letter = data.letters.find((item) => item.id === id) ?? data.letters[0];
       const vendor = data.vendors.find((item) => item.id === letter.vendorId) ?? data.vendors[0];
       relatedName = vendor.company;
       filename = `Surat-Kesanggupan-${vendor.company}.pdf`;
-      drawAgreementPdf(doc, data, vendor, letter);
+      await drawAgreementPdf(doc, data, vendor, letter);
     }
     if (kind === "benefit") {
       const vendor = data.vendors.find((item) => item.id === id) ?? data.vendors[0];
@@ -455,7 +553,8 @@ export default function Home() {
         ["Booths", data.booths],
         ["Benefit Checklist", data.benefits],
         ["File Requirements", data.files],
-        ["Activity Log", data.logs]
+        ["Activity Log", data.logs],
+        ["Promo Usage", getReportRows("Promo usage report", data)]
       ];
       sheets.forEach(([name, sheetRows]) => XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(cleanRows(sheetRows)), name.slice(0, 31)));
     }
@@ -485,7 +584,7 @@ export default function Home() {
       <header className="border-b border-emeraldDeep/10 bg-white">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-sm font-semibold text-champagne">{data.event.name} <Badge tone="blue">{data.vendors.some((item) => item.demo) ? "Demo" : "Real Data"}</Badge></p>
+            <p className="text-sm font-semibold text-champagne">{data.event.name} <Badge tone={supabaseStatus.state === "connected" ? "emerald" : data.vendors.some((item) => item.demo) ? "blue" : "gold"}>{supabaseStatus.state === "connected" ? "Real Data" : data.vendors.some((item) => item.demo) ? "Demo" : "Local Mode"}</Badge></p>
             <h1 className="text-2xl font-bold text-emeraldDeep sm:text-3xl">PASS RIAU Event Manager</h1>
             <p className="mt-1 max-w-3xl text-sm text-slate-600">{data.event.fullTitle}</p>
           </div>
@@ -533,7 +632,7 @@ export default function Home() {
             </div>
           )}
 
-          {active === "event" && <EventSettingsPanel data={data} setData={setData} notify={notify} log={log} />}
+          {active === "event" && <EventSettingsPanel data={data} setData={setData} notify={notify} log={log} supabaseStatus={supabaseStatus} />}
           {active === "committee" && <CrudPanel title="Committee / Panitia" subtitle="Tambah, lihat, edit, hapus panitia dan role akses." primary="Tambah Panitia" rows={filtered(data.committee)} columns={["name", "role", "whatsapp", "email", "accessRole"]} getName={(row) => String(row.name)} onAdd={() => openModal("committee", "add")} onView={(id) => openModal("committee", "view", id)} onEdit={(id) => openModal("committee", "edit", id)} onDelete={deleteRecord} moduleKey="committee" />}
           {active === "vendors" && <VendorPanel data={data} filtered={filtered(data.vendors)} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} openModal={openModal} deleteRecord={deleteRecord} setDetailVendorId={setDetailVendorId} generatePdf={generatePdf} />}
           {active === "participants" && <CrudPanel title="Peserta / Participants" subtitle="Registrasi peserta individual dan status badge/sertifikat." primary="Tambah Peserta" rows={filtered(data.participants)} columns={["fullName", "institution", "category", "paymentStatus", "badgeStatus"]} getName={(row) => String(row.fullName)} onAdd={() => openModal("participants", "add")} onView={(id) => openModal("participants", "view", id)} onEdit={(id) => openModal("participants", "edit", id)} onDelete={deleteRecord} moduleKey="participants" />}
@@ -548,12 +647,12 @@ export default function Home() {
           {active === "whatsapp" && <WhatsAppPanel data={data} copyMessage={copyMessage} saveMessage={saveMessage} />}
           {active === "activity" && <ActivityPanel rows={filtered(data.logs)} exportCsvRows={exportCsvRows} />}
           {active === "reports" && <ReportsPanel selectedReport={selectedReport} setSelectedReport={setSelectedReport} rows={reportRows} exportCsvRows={exportCsvRows} exportExcel={exportExcel} exportPdf={() => generatePdf("report")} />}
-          {active === "settings" && <SettingsPanel data={data} setData={setData} notify={notify} log={log} exportBackup={() => downloadBlob(JSON.stringify(data, null, 2), "pass-riau-backup.json", "application/json")} />}
+          {active === "settings" && <SettingsPanel data={data} setData={setData} notify={notify} log={log} supabaseStatus={supabaseStatus} exportBackup={() => downloadBlob(JSON.stringify(data, null, 2), "pass-riau-backup.json", "application/json")} />}
         </section>
       </div>
 
       {selectedVendor && <VendorDetail vendor={selectedVendor} data={data} onClose={() => setDetailVendorId(null)} />}
-      {modal && <CrudModal modal={modal} data={data} setData={setData} close={() => setModal(null)} notify={notify} log={log} />}
+      {modal && <CrudModal modal={modal} data={data} setData={setData} close={() => setModal(null)} notify={notify} log={log} supabaseStatus={supabaseStatus} />}
       {toast && <div className="fixed bottom-5 right-5 z-50 rounded-lg bg-emeraldDeep px-4 py-3 text-sm font-semibold text-white shadow-soft">{toast}</div>}
     </main>
   );
@@ -633,7 +732,42 @@ function FilePanel({ data, rows, openModal, deleteRecord, saveData }: { data: Ap
 }
 
 function InvoicePanel({ data, rows, openModal, deleteRecord, generatePdf, archiveDocument, markSent, copyMessage, saveMessage }: { data: AppData; rows: Record<string, unknown>[]; openModal: (key: EditableKey, mode: "add" | "edit" | "view", id?: string) => void; deleteRecord: (key: EditableKey, id: string, name: string) => void; generatePdf: (kind: "invoice" | "receipt" | "agreement" | "report" | "benefit", id?: string, archive?: boolean, openPrint?: boolean) => void; archiveDocument: (name: string, type: string, relatedName: string, notes?: string) => void; markSent: (id: string) => void; copyMessage: (message: string, label: string) => Promise<void>; saveMessage: (message: WhatsAppMessage) => void }) {
-  return <Card><SectionTitle title="Invoice Generator" subtitle="View, download, print, archive, WhatsApp, mark sent." action={<Toolbar primary="Buat Invoice" onAdd={() => openModal("invoices", "add")} />} /><Table><thead><tr><Th>Nomor</Th><Th>Bill To</Th><Th>Total</Th><Th>Verified Paid</Th><Th>Pending</Th><Th>Sisa</Th><Th>Status</Th><Th>Aksi</Th></tr></thead><tbody>{rows.map((row) => { const invoice = row as Invoice; const total = invoiceTotal(invoice); const paid = verifiedPaid(invoice.id, data.payments); const vendor = data.vendors.find((item) => item.id === invoice.vendorId); const message = `Selamat siang Bapak/Ibu/Dr./Tim ${invoice.billTo}, berikut kami kirimkan invoice ${invoice.number} untuk partisipasi pada PASS RIAU ${data.event.year}. Total tagihan ${rupiah(total)}, sisa ${rupiah(total - paid)}. Mohon pembayaran sesuai detail invoice. Terima kasih.`; return <tr key={invoice.id}><Td>{invoice.number}</Td><Td>{invoice.billTo}</Td><Td>{rupiah(total)}</Td><Td>{rupiah(paid)}</Td><Td>{rupiah(pendingPaid(invoice.id, data.payments))}</Td><Td>{rupiah(total - paid)}</Td><Td><Badge tone={tone(invoice.status)}>{invoice.status}</Badge></Td><Td><RowActions onView={() => openModal("invoices", "view", invoice.id)} onEdit={() => openModal("invoices", "edit", invoice.id)} onDelete={() => deleteRecord("invoices", invoice.id, invoice.number)} extra={<><Button variant="ghost" onClick={() => generatePdf("invoice", invoice.id)}><Download size={15} /></Button><Button variant="ghost" onClick={() => generatePdf("invoice", invoice.id, false, true)}><Printer size={15} /></Button><Button variant="ghost" onClick={() => { archiveDocument(`${invoice.number.replaceAll("/", "-")}.pdf`, "Invoice PDF", invoice.billTo); generatePdf("invoice", invoice.id, true); }}><Archive size={15} /></Button><Button variant="ghost" onClick={() => markSent(invoice.id)}>Sent</Button><Button variant="ghost" onClick={() => { copyMessage(message, invoice.number); saveMessage({ id: uid("wa"), type: "Send invoice", recipient: invoice.billTo, phone: vendor?.whatsapp ?? "", text: message }); }}><Copy size={15} /></Button>{vendor?.whatsapp && <a className="rounded-md px-3 py-2 text-sm hover:bg-slate-100" href={waUrl(vendor.whatsapp, message)} target="_blank" rel="noreferrer">WA</a>}</>} /></Td></tr>; })}</tbody></Table></Card>;
+  const [targetFilter, setTargetFilter] = useState("Semua");
+  const [paymentFilter, setPaymentFilter] = useState("Semua");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [search, setSearch] = useState("");
+  const invoices = rows.map((row) => row as Invoice).filter((invoice) => {
+    const paymentStatus = derivePaymentStatus(invoice, data.payments);
+    const date = new Date(invoice.invoiceDate || todayIdDate());
+    return (targetFilter === "Semua" || invoiceTargetLabel(invoice) === targetFilter)
+      && (paymentFilter === "Semua" || paymentStatus === paymentFilter)
+      && (!dateFrom || date >= new Date(dateFrom))
+      && (!dateTo || date <= new Date(dateTo))
+      && invoiceTargetSearch(invoice).includes(search.toLowerCase());
+  });
+
+  const actionButton = (label: string, icon: React.ReactNode, onClick: () => void) => <Button variant="ghost" className="h-8 min-h-8 w-8 px-0" title={label} aria-label={label} onClick={onClick}>{icon}</Button>;
+
+  return (
+    <Card>
+      <SectionTitle title="Invoice Generator" subtitle="Target type jelas, harga otomatis, status invoice/payment/verifikasi dipisah." action={<Toolbar primary="Buat Invoice" onAdd={() => openModal("invoices", "add")} />} />
+      <div className="mb-4 grid gap-2 md:grid-cols-5">
+        <div className="relative md:col-span-2"><Search className="absolute left-3 top-3 text-slate-400" size={16} /><Input className="pl-9" placeholder="Cari nomor, vendor, peserta, group..." value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+        <Select value={targetFilter} onChange={(event) => setTargetFilter(event.target.value)}><option>Semua</option>{invoiceTargetTypes.map((type) => <option key={type}>{type}</option>)}</Select>
+        <Select value={paymentFilter} onChange={(event) => setPaymentFilter(event.target.value)}><option>Semua</option><option>Unpaid</option><option>DP Paid</option><option>Partially Paid</option><option>Paid</option><option>Overdue</option></Select>
+        <div className="grid grid-cols-2 gap-2"><Input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /><Input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></div>
+      </div>
+      {invoices.length === 0 ? <EmptyState title="Tidak ada invoice" body="Klik Buat Invoice atau ubah filter pencarian." /> : (
+        <>
+          <div className="hidden md:block">
+            <Table><thead><tr><Th>Invoice</Th><Th>Target</Th><Th>Total</Th><Th>Paid</Th><Th>Remaining</Th><Th>Invoice</Th><Th>Payment</Th><Th>Verify</Th><Th>Aksi</Th></tr></thead><tbody>{invoices.map((invoice) => { const total = invoiceTotal(invoice); const paid = verifiedPaid(invoice.id, data.payments); const vendor = data.vendors.find((item) => item.id === invoice.vendorId || item.id === invoice.targetId); const message = `Selamat siang Bapak/Ibu/Dr./Tim ${invoice.billTo}, berikut kami kirimkan invoice ${invoice.number} untuk ${invoiceTargetLabel(invoice)} PASS RIAU ${data.event.year}. Total ${rupiah(total)}, sisa ${rupiah(total - paid)}. Terima kasih.`; return <tr key={invoice.id}><Td><span className="font-semibold">{invoice.number}</span><br /><span className="text-xs">{invoice.invoiceDate} / due {invoice.dueDate}</span></Td><Td>{invoiceTargetLabel(invoice)}<br /><span className="text-xs">{invoice.billTo}</span></Td><Td>{rupiah(total)}</Td><Td>{rupiah(paid)}</Td><Td>{rupiah(total - paid)}</Td><Td><Badge tone={tone(invoice.status)}>{invoice.status}</Badge></Td><Td><Badge tone={tone(derivePaymentStatus(invoice, data.payments))}>{derivePaymentStatus(invoice, data.payments)}</Badge></Td><Td><Badge tone={tone(deriveVerificationStatus(invoice, data.payments))}>{deriveVerificationStatus(invoice, data.payments)}</Badge></Td><Td><div className="flex flex-nowrap items-center gap-1">{actionButton("View", <Eye size={15} />, () => openModal("invoices", "view", invoice.id))}{actionButton("Edit", <Edit3 size={15} />, () => openModal("invoices", "edit", invoice.id))}{actionButton("Download PDF", <Download size={15} />, () => generatePdf("invoice", invoice.id))}{actionButton("Print", <Printer size={15} />, () => generatePdf("invoice", invoice.id, false, true))}{actionButton("Archive", <Archive size={15} />, () => { archiveDocument(`${invoice.number.replaceAll("/", "-")}.pdf`, "Invoice PDF", invoice.billTo); generatePdf("invoice", invoice.id, true); })}{actionButton("Mark Sent", <CheckCircle2 size={15} />, () => markSent(invoice.id))}{actionButton("Copy WhatsApp", <Copy size={15} />, () => { copyMessage(message, invoice.number); saveMessage({ id: uid("wa"), type: "Send invoice", recipient: invoice.billTo, phone: vendor?.whatsapp ?? "", text: message }); })}{vendor?.whatsapp && <a title="Open WhatsApp" aria-label="Open WhatsApp" className="inline-flex h-8 w-8 items-center justify-center rounded-md hover:bg-slate-100" href={waUrl(vendor.whatsapp, message)} target="_blank" rel="noreferrer"><MessageCircle size={15} /></a>}{actionButton("Delete/Cancel", <Trash2 size={15} />, () => deleteRecord("invoices", invoice.id, invoice.number))}</div></Td></tr>; })}</tbody></Table>
+          </div>
+          <div className="grid gap-3 md:hidden">{invoices.map((invoice) => { const total = invoiceTotal(invoice); const paid = verifiedPaid(invoice.id, data.payments); return <div key={invoice.id} className="rounded-lg border border-slate-200 bg-white p-3"><div className="flex items-start justify-between gap-2"><div><p className="font-semibold text-emeraldDeep">{invoice.number}</p><p className="text-sm">{invoice.billTo}</p><p className="text-xs text-slate-500">{invoiceTargetLabel(invoice)} | {invoice.invoiceDate}</p></div><Badge tone={tone(derivePaymentStatus(invoice, data.payments))}>{derivePaymentStatus(invoice, data.payments)}</Badge></div><div className="mt-2 grid grid-cols-3 gap-2 text-sm"><p>Total<br /><strong>{rupiah(total)}</strong></p><p>Paid<br /><strong>{rupiah(paid)}</strong></p><p>Sisa<br /><strong>{rupiah(total - paid)}</strong></p></div><div className="mt-2 flex flex-wrap gap-1">{actionButton("View", <Eye size={15} />, () => openModal("invoices", "view", invoice.id))}{actionButton("Edit", <Edit3 size={15} />, () => openModal("invoices", "edit", invoice.id))}{actionButton("Download PDF", <Download size={15} />, () => generatePdf("invoice", invoice.id))}{actionButton("Delete/Cancel", <Trash2 size={15} />, () => deleteRecord("invoices", invoice.id, invoice.number))}</div></div>; })}</div>
+        </>
+      )}
+    </Card>
+  );
 }
 
 function PaymentPanel({ data, rows, openModal, deleteRecord, verifyPayment, generatePdf, copyMessage, saveMessage }: { data: AppData; rows: Record<string, unknown>[]; openModal: (key: EditableKey, mode: "add" | "edit" | "view", id?: string) => void; deleteRecord: (key: EditableKey, id: string, name: string) => void; verifyPayment: (id: string, accepted: boolean) => void; generatePdf: (kind: "invoice" | "receipt" | "agreement" | "report" | "benefit", id?: string, archive?: boolean, openPrint?: boolean) => void; copyMessage: (message: string, label: string) => Promise<void>; saveMessage: (message: WhatsAppMessage) => void }) {
@@ -740,7 +874,7 @@ function GroupPanel({ data, saveData }: { data: AppData; saveData: (updater: (cu
   );
 }
 
-function SettingsPanel({ data, setData, notify, log, exportBackup }: { data: AppData; setData: (data: AppData) => void; notify: (message: string) => void; log: (action: string, entityType: string, entityName: string, notes?: string) => void; exportBackup: () => void }) {
+function SettingsPanel({ data, setData, notify, log, supabaseStatus, exportBackup }: { data: AppData; setData: (data: AppData) => void; notify: (message: string) => void; log: (action: string, entityType: string, entityName: string, notes?: string) => void; supabaseStatus: SupabaseConnectionStatus; exportBackup: () => void }) {
   const importBackup = (file?: File) => {
     if (!file) return;
     const reader = new FileReader();
@@ -751,10 +885,25 @@ function SettingsPanel({ data, setData, notify, log, exportBackup }: { data: App
     };
     reader.readAsText(file);
   };
-  return <Card><SectionTitle title="Settings - Demo Data" subtitle="Kelola data lokal sebelum Supabase dihubungkan." /><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"><Button onClick={() => { setData(initialData()); notify("PASS RIAU 2026 sample data dimuat."); log("Loaded demo data", "Settings", "PASS RIAU 2026"); }}><Upload size={16} /> Load PASS RIAU 2026 Sample Data</Button><Button variant="outline" onClick={() => { if (confirm("Yakin ingin menghapus data demo?")) { setData({ ...data, vendors: data.vendors.filter((item) => !item.demo), participants: data.participants.filter((item) => !item.demo), committee: data.committee.filter((item) => !item.demo), booths: data.booths.filter((item) => !item.demo), benefits: data.benefits.filter((item) => !item.demo), files: data.files.filter((item) => !item.demo), invoices: data.invoices.filter((item) => !item.demo), payments: data.payments.filter((item) => !item.demo), documents: data.documents.filter((item) => !item.demo), letters: data.letters.filter((item) => !item.demo), logs: data.logs.filter((item) => !item.demo) }); notify("Demo data dihapus."); log("Cleared demo data", "Settings", "Demo Data"); } }}><Trash2 size={16} /> Clear Demo Data</Button><Button variant="outline" onClick={() => { if (confirm("Yakin ingin reset semua data lokal?")) { localStorage.removeItem(STORAGE_KEY); setData(initialData()); notify("Semua data lokal direset."); } }}><RotateCcw size={16} /> Reset All Local Data</Button><Button onClick={exportBackup}><Download size={16} /> Export Backup</Button><label className="inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium"><Upload size={16} /> Import Backup<input type="file" accept="application/json" className="hidden" onChange={(event) => importBackup(event.target.files?.[0])} /></label></div><p className="mt-5 rounded-md bg-amber-50 p-3 text-sm text-amber-900">Data demo diberi badge Demo dan bisa diedit/dihapus. Data lokal tersimpan di browser ini.</p></Card>;
+  const clearDemo = async () => {
+    if (!confirm("Yakin ingin menghapus data demo?")) return;
+    try {
+      if (supabaseStatus.state === "connected") await clearSupabaseDemoRecords();
+      setData({ ...data, vendors: data.vendors.filter((item) => !item.demo), participants: data.participants.filter((item) => !item.demo), committee: data.committee.filter((item) => !item.demo), booths: data.booths.filter((item) => !item.demo), benefits: data.benefits.filter((item) => !item.demo), files: data.files.filter((item) => !item.demo), invoices: data.invoices.filter((item) => !item.demo), payments: data.payments.filter((item) => !item.demo), documents: data.documents.filter((item) => !item.demo), letters: data.letters.filter((item) => !item.demo), logs: data.logs.filter((item) => !item.demo) });
+      notify(supabaseStatus.state === "connected" ? "Demo data dihapus dari Supabase dan tampilan lokal." : "Demo data dihapus.");
+      log("Cleared demo data", "Settings", "Demo Data");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Gagal menghapus demo data.");
+    }
+  };
+  return <Card><SectionTitle title="Settings - Demo Data" subtitle="Demo data hanya dimuat jika tombol Load Demo Data diklik." /><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3"><Button onClick={() => { setData(initialData()); notify("PASS RIAU 2026 sample data dimuat di tampilan lokal. Simpan satu per satu untuk menulis ke Supabase."); log("Loaded demo data", "Settings", "PASS RIAU 2026"); }}><Upload size={16} /> Load PASS RIAU 2026 Sample Data</Button><Button variant="outline" onClick={clearDemo}><Trash2 size={16} /> Clear Demo Data</Button><Button variant="outline" onClick={() => { if (confirm("Yakin ingin reset semua data lokal?")) { localStorage.removeItem(STORAGE_KEY); setData(supabaseStatus.state === "connected" ? emptyData() : emptyData()); notify("Semua data lokal direset."); } }}><RotateCcw size={16} /> Reset All Local Data</Button><Button onClick={exportBackup}><Download size={16} /> Export Backup</Button><label className="inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium"><Upload size={16} /> Import Backup<input type="file" accept="application/json" className="hidden" onChange={(event) => importBackup(event.target.files?.[0])} /></label></div><p className="mt-5 rounded-md bg-amber-50 p-3 text-sm text-amber-900">Jika Supabase connected, dashboard dan CRUD utama memakai data Supabase. Demo hanya aktif setelah dimuat manual.</p></Card>;
 }
 
-function EventSettingsPanel({ data, setData, notify, log }: { data: AppData; setData: (updater: AppData | ((current: AppData) => AppData)) => void; notify: (message: string) => void; log: (action: string, entityType: string, entityName: string, notes?: string) => void }) {
+function EventSettingsPanel({ data, setData, notify, log, supabaseStatus }: { data: AppData; setData: (updater: AppData | ((current: AppData) => AppData)) => void; notify: (message: string) => void; log: (action: string, entityType: string, entityName: string, notes?: string) => void; supabaseStatus: SupabaseConnectionStatus }) {
+  const logoInputs = useRef<Array<HTMLInputElement | null>>([]);
+  const stampInput = useRef<HTMLInputElement | null>(null);
+  const signatureInput = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState<string | null>(null);
   const updateEvent = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -763,7 +912,130 @@ function EventSettingsPanel({ data, setData, notify, log }: { data: AppData; set
     log("Updated event settings", "Event", data.event.name);
   };
   const updateLogo = (index: number, key: string, value: string | boolean | number) => setData((current) => ({ ...current, event: { ...current.event, logos: current.event.logos.map((logo, logoIndex) => logoIndex === index ? { ...logo, [key]: value } : logo) } }));
-  return <Card><SectionTitle title="Event Settings" subtitle="Konfigurasi multi-year, logo PDF 4-5 logo, stempel resmi, dan promo registrasi." /><form onSubmit={updateEvent} className="grid gap-4 md:grid-cols-2"><Field label="Nama event"><Input name="name" defaultValue={data.event.name} required /></Field><Field label="Tahun"><Input name="year" type="number" defaultValue={data.event.year} required /></Field><Field label="Judul lengkap"><Input name="fullTitle" defaultValue={data.event.fullTitle} required /></Field><Field label="Rekening bank"><Input name="bankAccount" defaultValue={data.event.bankAccount} /></Field><Field label="Contact person"><Input name="contactPerson" defaultValue={data.event.contactPerson} /></Field><Field label="Label stempel resmi"><Input name="stampLabel" defaultValue={data.event.stampLabel ?? "Stempel Resmi PERDESTI / PASS"} /></Field><div className="md:col-span-2 grid gap-2 rounded-lg border border-slate-200 p-4"><p className="font-semibold text-emeraldDeep">Tampilkan stempel pada dokumen</p><div className="grid gap-2 sm:grid-cols-4"><label><input name="showStampOnInvoice" type="checkbox" defaultChecked={data.event.showStampOnInvoice} /> Invoice</label><label><input name="showStampOnReceipt" type="checkbox" defaultChecked={data.event.showStampOnReceipt} /> Receipt</label><label><input name="showStampOnAgreement" type="checkbox" defaultChecked={data.event.showStampOnAgreement} /> Surat Sponsor</label><label><input name="showStampOnFormalDocuments" type="checkbox" defaultChecked={data.event.showStampOnFormalDocuments} /> Formal</label></div><Button type="button" variant="outline" onClick={() => notify("Upload stempel placeholder tersimpan. Hubungkan Supabase Storage untuk file asli.")}>Upload/Replace Stempel</Button></div><div className="md:col-span-2"><Field label="Disclaimer footer"><Textarea name="footerDisclaimer" defaultValue={data.event.footerDisclaimer} /></Field></div><div className="md:col-span-2 rounded-lg border border-slate-200 p-4"><h3 className="mb-3 text-lg font-bold text-emeraldDeep">Promo Settings</h3><div className="grid gap-4 md:grid-cols-2"><Field label="Promo name"><Input name="promoName" defaultValue={data.event.promoName} /></Field><Field label="Promo type"><Input name="promoType" defaultValue={data.event.promoType} /></Field><Field label="Start date"><Input name="promoStartDate" type="date" defaultValue={data.event.promoStartDate} /></Field><Field label="End date"><Input name="promoEndDate" type="date" defaultValue={data.event.promoEndDate} /></Field><Field label="Applies to categories"><Input name="promoCategories" defaultValue={data.event.promoCategories} /></Field><Field label="Minimum paid count"><Input name="promoMinimumPaidCount" type="number" defaultValue={data.event.promoMinimumPaidCount ?? 5} /></Field><Field label="Free count"><Input name="promoFreeCount" type="number" defaultValue={data.event.promoFreeCount ?? 1} /></Field><label className="flex items-center gap-2 pt-7"><input name="promoActive" type="checkbox" defaultChecked={data.event.promoActive} /> Promo aktif</label><div className="md:col-span-2"><Field label="Promo notes"><Textarea name="promoNotes" defaultValue={data.event.promoNotes} /></Field></div></div></div><div className="md:col-span-2"><Button type="submit"><Save size={16} /> Simpan Event Settings</Button></div></form><h3 className="mt-8 text-lg font-bold text-emeraldDeep">Logo Dokumen</h3><Table><thead><tr><Th>Logo</Th><Th>Invoice</Th><Th>Receipt</Th><Th>Surat</Th><Th>Formal</Th><Th>Order</Th><Th>Size</Th><Th>Upload</Th></tr></thead><tbody>{data.event.logos.map((logo, index) => <tr key={`${logo.name}-${index}`}><Td><Input value={logo.name} onChange={(event) => updateLogo(index, "name", event.target.value)} /></Td><Td><input type="checkbox" checked={logo.showOnInvoice} onChange={(event) => updateLogo(index, "showOnInvoice", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnReceipt} onChange={(event) => updateLogo(index, "showOnReceipt", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnAgreement} onChange={(event) => updateLogo(index, "showOnAgreement", event.target.checked)} /></Td><Td><input type="checkbox" defaultChecked /></Td><Td><Input type="number" value={logo.order} onChange={(event) => updateLogo(index, "order", Number(event.target.value))} /></Td><Td><Select value={logo.size} onChange={(event) => updateLogo(index, "size", event.target.value)}><option>small</option><option>medium</option><option>large</option></Select></Td><Td><Button variant="outline" onClick={() => notify("Upload placeholder tersimpan. Supabase Storage siap dipakai setelah koneksi.")}>Upload/Replace</Button></Td></tr>)}</tbody></Table></Card>;
+  const archiveUpload = (document: DocumentRecord & { bucket?: string; storagePath?: string; publicUrl?: string; uploadedAt?: string }) => {
+    setData((current) => ({
+      ...current,
+      documents: [
+        document,
+        ...current.documents.filter((item) => item.id !== document.id && item.name !== document.name)
+      ]
+    }));
+  };
+  const localPreview = (file: File) => URL.createObjectURL(file);
+  const uploadLogo = async (index: number, file?: File) => {
+    if (!file) return;
+    setUploading(`logo-${index}`);
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const path = `${data.event.year}/logo-${index + 1}-${Date.now()}-${safeName}`;
+      let publicUrl = localPreview(file);
+      let storagePath = path;
+      if (supabaseStatus.state === "connected") {
+        await uploadFile("event-logos", path, file);
+        publicUrl = getPublicUrl("event-logos", path);
+      } else {
+        storagePath = `local-preview/${path}`;
+        notify(`Mode lokal aktif (${supabaseStatus.state === "local" ? supabaseStatus.reason : "checking"}). File hanya preview lokal.`);
+      }
+      setData((current) => ({
+        ...current,
+        event: {
+          ...current.event,
+          logos: current.event.logos.map((logo, logoIndex) => logoIndex === index ? { ...logo, storagePath, publicUrl } : logo)
+        }
+      }));
+      archiveUpload({ id: `logo-${index + 1}`, name: data.event.logos[index]?.name ?? `Logo ${index + 1}`, type: "Event Logo", relatedName: data.event.name, status: "Uploaded", createdAt: new Date().toISOString(), notes: `bucket=event-logos; path=${storagePath}`, bucket: "event-logos", storagePath, publicUrl, uploadedAt: new Date().toISOString() });
+      log("Uploaded document", "Event Logo", data.event.logos[index]?.name ?? `Logo ${index + 1}`, storagePath);
+      notify(supabaseStatus.state === "connected" ? "Logo berhasil diupload ke Supabase Storage." : "Logo disimpan sebagai preview lokal.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Upload logo gagal.");
+    } finally {
+      setUploading(null);
+    }
+  };
+  const removeLogo = async (index: number) => {
+    const logo = data.event.logos[index];
+    if (!logo?.storagePath) return;
+    if (!confirm(`Hapus logo ${logo.name}?`)) return;
+    setUploading(`logo-${index}`);
+    try {
+      if (supabaseStatus.state === "connected" && !logo.storagePath.startsWith("local-preview/")) await deleteFile("event-logos", logo.storagePath);
+      setData((current) => ({ ...current, event: { ...current.event, logos: current.event.logos.map((item, logoIndex) => logoIndex === index ? { ...item, storagePath: undefined, publicUrl: undefined } : item) }, documents: current.documents.filter((item) => item.name !== logo.name) }));
+      notify("Logo berhasil dihapus.");
+      log("Deleted document", "Event Logo", logo.name);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Gagal menghapus logo.");
+    } finally {
+      setUploading(null);
+    }
+  };
+  const uploadStamp = async (file?: File) => {
+    if (!file) return;
+    setUploading("stamp");
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const path = `${data.event.year}/stamp-${Date.now()}-${safeName}`;
+      let publicUrl = localPreview(file);
+      let storagePath = path;
+      if (supabaseStatus.state === "connected") {
+        await uploadFile("stamps", path, file);
+        publicUrl = getPublicUrl("stamps", path);
+      } else {
+        storagePath = `local-preview/${path}`;
+        notify(`Mode lokal aktif (${supabaseStatus.state === "local" ? supabaseStatus.reason : "checking"}). Stempel hanya preview lokal.`);
+      }
+      setData((current) => ({ ...current, event: { ...current.event, stampPath: storagePath, stampUrl: publicUrl } }));
+      archiveUpload({ id: "official-stamp", name: data.event.stampLabel ?? "Stempel Resmi", type: "Stamp", relatedName: data.event.name, status: "Uploaded", createdAt: new Date().toISOString(), notes: `bucket=stamps; path=${storagePath}`, bucket: "stamps", storagePath, publicUrl, uploadedAt: new Date().toISOString() });
+      log("Uploaded document", "Stamp", data.event.stampLabel ?? "Stempel Resmi", storagePath);
+      notify(supabaseStatus.state === "connected" ? "Stempel berhasil diupload ke Supabase Storage." : "Stempel disimpan sebagai preview lokal.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Upload stempel gagal.");
+    } finally {
+      setUploading(null);
+    }
+  };
+  const removeStamp = async () => {
+    if (!data.event.stampPath) return;
+    if (!confirm("Hapus stempel resmi?")) return;
+    setUploading("stamp");
+    try {
+      if (supabaseStatus.state === "connected" && !data.event.stampPath.startsWith("local-preview/")) await deleteFile("stamps", data.event.stampPath);
+      setData((current) => ({ ...current, event: { ...current.event, stampPath: undefined, stampUrl: undefined }, documents: current.documents.filter((item) => item.id !== "official-stamp") }));
+      notify("Stempel berhasil dihapus.");
+      log("Deleted document", "Stamp", data.event.stampLabel ?? "Stempel Resmi");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Gagal menghapus stempel.");
+    } finally {
+      setUploading(null);
+    }
+  };
+  const uploadSignature = async (file?: File) => {
+    if (!file) return;
+    setUploading("signature");
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const path = `${data.event.year}/signature-${Date.now()}-${safeName}`;
+      let publicUrl = localPreview(file);
+      let storagePath = path;
+      if (supabaseStatus.state === "connected") {
+        await uploadFile("signatures", path, file);
+        publicUrl = getPublicUrl("signatures", path);
+      } else {
+        storagePath = `local-preview/${path}`;
+        notify(`Mode lokal aktif (${supabaseStatus.state === "local" ? supabaseStatus.reason : "checking"}). Signature hanya preview lokal.`);
+      }
+      setData((current) => ({ ...current, event: { ...current.event, signaturePath: storagePath, signatureUrl: publicUrl, signatureLabel: current.event.signatureLabel ?? "Finance/Bendahara Signature" } }));
+      archiveUpload({ id: "finance-signature", name: data.event.signatureLabel ?? "Finance/Bendahara Signature", type: "Signature", relatedName: data.event.name, status: "Uploaded", createdAt: new Date().toISOString(), notes: `bucket=signatures; path=${storagePath}`, bucket: "signatures", storagePath, publicUrl, uploadedAt: new Date().toISOString() });
+      log("Uploaded document", "Signature", data.event.signatureLabel ?? "Finance/Bendahara Signature", storagePath);
+      notify(supabaseStatus.state === "connected" ? "Signature berhasil diupload ke Supabase Storage." : "Signature disimpan sebagai preview lokal.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Upload signature gagal.");
+    } finally {
+      setUploading(null);
+    }
+  };
+
+  return <Card><SectionTitle title="Event Settings" subtitle="Konfigurasi multi-year, logo PDF 4-5 logo, stempel resmi, signature, promo, dan pricing." /><form onSubmit={updateEvent} className="grid gap-4 md:grid-cols-2"><Field label="Nama event"><Input name="name" defaultValue={data.event.name} required /></Field><Field label="Tahun"><Input name="year" type="number" defaultValue={data.event.year} required /></Field><Field label="Judul lengkap"><Input name="fullTitle" defaultValue={data.event.fullTitle} required /></Field><Field label="Rekening bank"><Input name="bankAccount" defaultValue={data.event.bankAccount} /></Field><Field label="Contact person"><Input name="contactPerson" defaultValue={data.event.contactPerson} /></Field><Field label="Label stempel resmi"><Input name="stampLabel" defaultValue={data.event.stampLabel ?? "Stempel Resmi PERDESTI / PASS"} /></Field><div className="md:col-span-2 grid gap-3 rounded-lg border border-slate-200 p-4"><p className="font-semibold text-emeraldDeep">Stempel & Signature</p><div className="grid gap-2 sm:grid-cols-4"><label><input name="showStampOnInvoice" type="checkbox" defaultChecked={data.event.showStampOnInvoice} /> Invoice</label><label><input name="showStampOnReceipt" type="checkbox" defaultChecked={data.event.showStampOnReceipt} /> Receipt</label><label><input name="showStampOnAgreement" type="checkbox" defaultChecked={data.event.showStampOnAgreement} /> Surat Sponsor</label><label><input name="showStampOnFormalDocuments" type="checkbox" defaultChecked={data.event.showStampOnFormalDocuments} /> Formal</label></div><div className="flex flex-wrap gap-4">{data.event.stampUrl ? <img src={data.event.stampUrl} alt="Preview stempel" className="h-20 w-32 rounded-md border object-contain p-2" /> : <div className="flex h-20 w-32 items-center justify-center rounded-md border border-dashed text-xs text-slate-500">Stamp preview</div>}{data.event.signatureUrl ? <img src={data.event.signatureUrl} alt="Preview signature" className="h-20 w-32 rounded-md border object-contain p-2" /> : <div className="flex h-20 w-32 items-center justify-center rounded-md border border-dashed text-xs text-slate-500">Signature preview</div>}</div><div className="flex flex-wrap gap-2"><input ref={stampInput} type="file" accept=".png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(event) => uploadStamp(event.target.files?.[0])} /><input ref={signatureInput} type="file" accept=".png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(event) => uploadSignature(event.target.files?.[0])} /><Button type="button" variant="outline" disabled={uploading === "stamp"} onClick={() => stampInput.current?.click()}>{uploading === "stamp" ? "Uploading..." : "Upload/Replace Stempel"}</Button><Button type="button" variant="outline" disabled={uploading === "signature"} onClick={() => signatureInput.current?.click()}>{uploading === "signature" ? "Uploading..." : "Upload/Replace Signature"}</Button>{data.event.stampUrl && <Button type="button" variant="outline" onClick={removeStamp}>Remove Stempel</Button>}</div></div><div className="md:col-span-2"><Field label="Disclaimer footer"><Textarea name="footerDisclaimer" defaultValue={data.event.footerDisclaimer} /></Field></div><div className="md:col-span-2 rounded-lg border border-slate-200 p-4"><h3 className="mb-3 text-lg font-bold text-emeraldDeep">Promo Settings</h3><div className="grid gap-4 md:grid-cols-2"><Field label="Promo name"><Input name="promoName" defaultValue={data.event.promoName} /></Field><Field label="Promo type"><Input name="promoType" defaultValue={data.event.promoType} /></Field><Field label="Start date"><Input name="promoStartDate" type="date" defaultValue={data.event.promoStartDate} /></Field><Field label="End date"><Input name="promoEndDate" type="date" defaultValue={data.event.promoEndDate} /></Field><Field label="Applies to categories"><Input name="promoCategories" defaultValue={data.event.promoCategories} /></Field><Field label="Minimum paid count"><Input name="promoMinimumPaidCount" type="number" defaultValue={data.event.promoMinimumPaidCount ?? 5} /></Field><Field label="Free count"><Input name="promoFreeCount" type="number" defaultValue={data.event.promoFreeCount ?? 1} /></Field><label className="flex items-center gap-2 pt-7"><input name="promoActive" type="checkbox" defaultChecked={data.event.promoActive} /> Promo aktif</label><div className="md:col-span-2"><Field label="Promo notes"><Textarea name="promoNotes" defaultValue={data.event.promoNotes} /></Field></div></div></div><div className="md:col-span-2"><Button type="submit"><Save size={16} /> Simpan Event Settings</Button></div></form><h3 className="mt-8 text-lg font-bold text-emeraldDeep">Event Pricing Settings</h3><ReportPreview rows={pricingRules.map((rule) => ({ category: rule.category, type: rule.product, period: rule.period, startDate: rule.start, endDate: rule.end, price: rule.price, active: rule.active, notes: rule.notes }))} /><h3 className="mt-8 text-lg font-bold text-emeraldDeep">Logo Dokumen</h3><Table><thead><tr><Th>Preview</Th><Th>Logo</Th><Th>Invoice</Th><Th>Receipt</Th><Th>Surat</Th><Th>Formal</Th><Th>Order</Th><Th>Size</Th><Th>Upload</Th></tr></thead><tbody>{data.event.logos.map((logo, index) => <tr key={`${logo.name}-${index}`}><Td>{logo.publicUrl ? <img src={logo.publicUrl} alt={logo.name} className="h-12 w-20 rounded border object-contain p-1" /> : <div className="flex h-12 w-20 items-center justify-center rounded border border-dashed text-xs text-slate-500">Logo</div>}</Td><Td><Input value={logo.name} onChange={(event) => updateLogo(index, "name", event.target.value)} /><p className="mt-1 max-w-[180px] truncate text-xs text-slate-500">{logo.storagePath ?? "Belum upload"}</p></Td><Td><input type="checkbox" checked={logo.showOnInvoice} onChange={(event) => updateLogo(index, "showOnInvoice", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnReceipt} onChange={(event) => updateLogo(index, "showOnReceipt", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnAgreement} onChange={(event) => updateLogo(index, "showOnAgreement", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnFormalDocuments ?? true} onChange={(event) => updateLogo(index, "showOnFormalDocuments", event.target.checked)} /></Td><Td><Input type="number" value={logo.order} onChange={(event) => updateLogo(index, "order", Number(event.target.value))} /></Td><Td><Select value={logo.size} onChange={(event) => updateLogo(index, "size", event.target.value)}><option>small</option><option>medium</option><option>large</option></Select></Td><Td><div className="flex flex-wrap gap-2"><input ref={(node) => { logoInputs.current[index] = node; }} type="file" accept=".png,.jpg,.jpeg,.webp,.svg,image/png,image/jpeg,image/webp,image/svg+xml" className="hidden" onChange={(event) => uploadLogo(index, event.target.files?.[0])} /><Button type="button" variant="outline" disabled={uploading === `logo-${index}`} onClick={() => logoInputs.current[index]?.click()}>{uploading === `logo-${index}` ? "Uploading..." : "Upload/Replace"}</Button>{logo.publicUrl && <Button type="button" variant="outline" onClick={() => removeLogo(index)}>Remove</Button>}</div></Td></tr>)}</tbody></Table></Card>;
 }
 
 function VendorDetail({ vendor, data, onClose }: { vendor: Vendor; data: AppData; onClose: () => void }) {
@@ -801,12 +1073,12 @@ function VendorDetail({ vendor, data, onClose }: { vendor: Vendor; data: AppData
   );
 }
 
-function CrudModal({ modal, data, setData, close, notify, log }: { modal: ModalState; data: AppData; setData: (updater: (current: AppData) => AppData) => void; close: () => void; notify: (message: string) => void; log: (action: string, entityType: string, entityName: string, notes?: string) => void }) {
+function CrudModal({ modal, data, setData, close, notify, log, supabaseStatus }: { modal: ModalState; data: AppData; setData: (updater: (current: AppData) => AppData) => void; close: () => void; notify: (message: string) => void; log: (action: string, entityType: string, entityName: string, notes?: string) => void; supabaseStatus: SupabaseConnectionStatus }) {
   if (!modal) return null;
   const existing = getExisting(data, modal.key, modal.id);
   const readOnly = modal.mode === "view";
   const title = `${modal.mode === "add" ? "Tambah" : modal.mode === "edit" ? "Edit" : "View"} ${moduleTitle(modal.key)}`;
-  const submit = (event: React.FormEvent<HTMLFormElement>) => {
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (readOnly) return;
     const form = new FormData(event.currentTarget);
@@ -815,10 +1087,17 @@ function CrudModal({ modal, data, setData, close, notify, log }: { modal: ModalS
       notify(result.error);
       return;
     }
-    setData((current) => upsertByKey(current, modal.key, result.record));
-    notify("Data berhasil disimpan.");
-    log(modal.mode === "add" ? "Created record" : "Updated record", modal.key, result.name);
-    close();
+    try {
+      const record = supabaseStatus.state === "connected"
+        ? await upsertSupabaseRecord(modal.key, result.record, data.event)
+        : result.record;
+      setData((current) => upsertByKey(current, modal.key, record));
+      notify(supabaseStatus.state === "connected" ? "Data berhasil disimpan ke Supabase." : "Data berhasil disimpan.");
+      log(modal.mode === "add" ? "Created record" : "Updated record", modal.key, result.name);
+      close();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Gagal menyimpan data Supabase.");
+    }
   };
   return <div className="fixed inset-0 z-50 bg-slate-950/40 p-4"><form onSubmit={submit} className="mx-auto max-h-[92vh] max-w-3xl overflow-y-auto rounded-xl bg-white p-5 shadow-soft"><SectionTitle title={title} subtitle={readOnly ? "Mode lihat saja." : "Isi field wajib dengan jelas."} action={<Button type="button" variant="outline" onClick={close}>Tutup</Button>} /><div className="grid gap-4 md:grid-cols-2">{renderFields(modal.key, existing, data, readOnly)}</div><div className="mt-5 flex justify-end gap-2">{!readOnly && <Button type="submit"><Save size={16} /> Simpan</Button>}</div></form></div>;
 }
@@ -834,7 +1113,7 @@ function renderFields(key: EditableKey, existing: Record<string, unknown> | unde
   if (key === "booths") return <><Field label="Booth Number"><Input name="number" defaultValue={String(existing?.number ?? "")} required {...common} /></Field><Field label="Size"><Input name="size" defaultValue={String(existing?.size ?? "3 x 2 m")} {...common} /></Field><Field label="Area"><Input name="area" defaultValue={String(existing?.area ?? "")} {...common} /></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Available")} {...common}>{["Available", "Hold", "Booked", "DP Paid", "Paid", "Cancelled"].map((item) => <option key={item}>{item}</option>)}</Select></Field><Field label="Assigned Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? "")} {...common}><option value="">-</option>{vendorOptions}</Select></Field><Field label="Hold Expiry"><Input name="holdExpiry" type="date" defaultValue={String(existing?.holdExpiry ?? "")} {...common} /></Field><div className="md:col-span-2"><Field label="Electricity Note"><Textarea name="electricityNote" defaultValue={String(existing?.electricityNote ?? "450W")} {...common} /></Field></div></>;
   if (key === "benefits") return <><Field label="Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? data.vendors[0]?.id)} {...common}>{vendorOptions}</Select></Field><Field label="Benefit Name"><Input name="name" defaultValue={String(existing?.name ?? "")} required {...common} /></Field><Field label="Quantity"><Input name="quantity" type="number" defaultValue={Number(existing?.quantity ?? 1)} {...common} /></Field><Field label="Due Date"><Input name="dueDate" type="date" defaultValue={String(existing?.dueDate ?? todayIdDate())} {...common} /></Field><Field label="Responsible"><Select name="responsible" defaultValue={String(existing?.responsible ?? data.committee[0]?.name)} {...common}>{committeeOptions}</Select></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Pending")} {...common}>{["Not Started", "Pending", "In Progress", "Completed", "Not Applicable"].map((item) => <option key={item}>{item}</option>)}</Select></Field><div className="md:col-span-2"><Field label="Description"><Textarea name="description" defaultValue={String(existing?.description ?? "")} {...common} /></Field></div><div className="md:col-span-2"><Field label="Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
   if (key === "files") return <><Field label="Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? data.vendors[0]?.id)} {...common}>{vendorOptions}</Select></Field><Field label="Requirement Name"><Input name="name" defaultValue={String(existing?.name ?? "")} required {...common} /></Field><Field label="Required"><Select name="required" defaultValue={String(existing?.required ?? true)} {...common}><option value="true">Ya</option><option value="false">Tidak</option></Select></Field><Field label="Uploaded"><Select name="uploaded" defaultValue={String(existing?.uploaded ?? false)} {...common}><option value="false">Belum</option><option value="true">Sudah</option></Select></Field><Field label="Due Date"><Input name="dueDate" type="date" defaultValue={String(existing?.dueDate ?? todayIdDate())} {...common} /></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Missing")} {...common}>{["Missing", "Submitted", "Under Review", "Approved", "Rejected", "Not Required"].map((item) => <option key={item}>{item}</option>)}</Select></Field><div className="md:col-span-2"><Field label="Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
-  if (key === "invoices") return <><Field label="Invoice Number"><Input name="number" defaultValue={String(existing?.number ?? `${data.event.invoicePrefix}/${String(data.invoices.length + 1).padStart(3, "0")}`)} required {...common} /></Field><Field label="Bill To"><Input name="billTo" defaultValue={String(existing?.billTo ?? data.vendors[0]?.company ?? "")} required {...common} /></Field><Field label="Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? data.vendors[0]?.id)} {...common}><option value="">-</option>{vendorOptions}</Select></Field><Field label="PIC Contact"><Input name="picContact" defaultValue={String(existing?.picContact ?? "")} {...common} /></Field><Field label="Invoice Date"><Input name="invoiceDate" type="date" defaultValue={String(existing?.invoiceDate ?? todayIdDate())} {...common} /></Field><Field label="Due Date"><Input name="dueDate" type="date" defaultValue={String(existing?.dueDate ?? data.event.finalPaymentDeadline)} {...common} /></Field><Field label="Item Description"><Input name="description" defaultValue={String((existing?.items as Invoice["items"] | undefined)?.[0]?.description ?? "Paket Sponsor PASS RIAU")} required {...common} /></Field><Field label="Unit Price"><Input name="unitPrice" type="number" defaultValue={Number((existing?.items as Invoice["items"] | undefined)?.[0]?.unitPrice ?? 0)} required {...common} /></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Draft")} {...common}>{["Draft", "Sent", "DP Paid", "Partially Paid", "Paid", "Overdue", "Cancelled"].map((item) => <option key={item}>{item}</option>)}</Select></Field><Field label="Handled By"><Select name="handledBy" defaultValue={String(existing?.handledBy ?? data.committee[0]?.name)} {...common}>{committeeOptions}</Select></Field></>;
+  if (key === "invoices") return <InvoiceWizardFields existing={existing} data={data} readOnly={readOnly} />;
   if (key === "payments") return <><Field label="Billing Target Type"><Select name="targetType" defaultValue={String(existing?.targetType ?? "Vendor / Sponsor")} {...common}><option>Vendor / Sponsor</option><option>Participant</option><option>Group Registration</option><option>Custom / Other</option></Select></Field><Field label="Linked Vendor"><Select name="linkedVendorId" defaultValue={String(existing?.linkedEntityId ?? "")} {...common}><option value="">-</option>{vendorOptions}</Select></Field><Field label="Linked Participant"><Select name="linkedParticipantId" defaultValue={String(existing?.linkedEntityId ?? "")} {...common}><option value="">-</option>{data.participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.fullName}</option>)}</Select></Field><Field label="Manual payer / Custom"><Input name="manualPayer" defaultValue={String(existing?.linkedEntityName ?? existing?.senderName ?? "")} {...common} /></Field><Field label="Linked Invoice"><Select name="invoiceId" defaultValue={String(existing?.invoiceId ?? data.invoices[0]?.id)} {...common}>{invoiceOptions}</Select></Field><Field label="Linked Sponsor Agreement"><Select name="linkedAgreementId" defaultValue={String(existing?.linkedAgreementId ?? "")} {...common}><option value="">-</option>{data.letters.map((letter) => <option key={letter.id} value={letter.id}>{letter.number}</option>)}</Select></Field><Field label="Linked Booth Booking"><Select name="linkedBoothId" defaultValue={String(existing?.linkedBoothId ?? "")} {...common}><option value="">-</option>{data.booths.map((booth) => <option key={booth.id} value={booth.id}>{booth.number}</option>)}</Select></Field><Field label="Payment Date"><Input name="date" type="date" defaultValue={String(existing?.date ?? todayIdDate())} {...common} /></Field><Field label="Amount"><Input name="amount" type="number" defaultValue={Number(existing?.amount ?? 0)} required {...common} /></Field><Field label="Method"><Input name="method" defaultValue={String(existing?.method ?? "Transfer Bank")} {...common} /></Field><Field label="Receiving Bank"><Input name="receivingBank" defaultValue={String(existing?.receivingBank ?? "Bank Mandiri")} {...common} /></Field><Field label="Sender Name"><Input name="senderName" defaultValue={String(existing?.senderName ?? "")} required {...common} /></Field><Field label="Verification Status"><Select name="verificationStatus" defaultValue={String(existing?.verificationStatus ?? "Pending")} {...common}><option>Pending</option><option>Verified</option><option>Rejected</option></Select></Field><Field label="Received By"><Select name="receivedBy" defaultValue={String(existing?.receivedBy ?? data.committee[0]?.name)} {...common}>{committeeOptions}</Select></Field><Field label="Verified By"><Select name="verifiedBy" defaultValue={String(existing?.verifiedBy ?? "")} {...common}><option value="">-</option>{committeeOptions}</Select></Field><div className="md:col-span-2"><Field label="Proof Upload Placeholder / Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div><div className="md:col-span-2"><Field label="Special Agreement / Additional Notes"><Textarea name="specialAgreement" defaultValue={String(existing?.specialAgreement ?? "")} {...common} /></Field></div></>;
   if (key === "archive") return <><Field label="Document Name"><Input name="name" defaultValue={String(existing?.name ?? "")} required {...common} /></Field><Field label="Type"><Input name="type" defaultValue={String(existing?.type ?? "Custom Document")} {...common} /></Field><Field label="Related Name"><Input name="relatedName" defaultValue={String(existing?.relatedName ?? "")} {...common} /></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Uploaded")} {...common}>{["Draft", "Uploaded", "Pending Review", "Approved", "Rejected", "Archived"].map((item) => <option key={item}>{item}</option>)}</Select></Field><div className="md:col-span-2"><Field label="Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
   if (key === "agreement") return <><Field label="Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? data.vendors[0]?.id)} {...common}>{vendorOptions}</Select></Field><Field label="Letter Number"><Input name="number" defaultValue={String(existing?.number ?? `${data.event.agreementPrefix}/${String(data.letters.length + 1).padStart(3, "0")}`)} required {...common} /></Field><Field label="Company Signer"><Input name="signerName" defaultValue={String(existing?.signerName ?? "")} required {...common} /></Field><Field label="Signer Role"><Input name="signerRole" defaultValue={String(existing?.signerRole ?? "")} {...common} /></Field><Field label="Committee Signer"><Input name="committeeSignerName" defaultValue={String(existing?.committeeSignerName ?? data.event.contactPerson)} {...common} /></Field><Field label="Committee Role"><Input name="committeeSignerRole" defaultValue={String(existing?.committeeSignerRole ?? "Panitia PASS RIAU")} {...common} /></Field><Field label="City/date"><Input name="cityDate" defaultValue={String(existing?.cityDate ?? `Pekanbaru, ${todayIdDate()}`)} {...common} /></Field><div className="md:col-span-2"><Field label="Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
@@ -843,6 +1122,68 @@ function renderFields(key: EditableKey, existing: Record<string, unknown> | unde
 
 function getExisting(data: AppData, key: EditableKey, id?: string): Record<string, unknown> | undefined {
   return collection(data, key).find((item) => String(item.id) === id);
+}
+
+function InvoiceWizardFields({ existing, data, readOnly }: { existing: Record<string, unknown> | undefined; data: AppData; readOnly: boolean }) {
+  const initialItem = (existing?.items as Invoice["items"] | undefined)?.[0];
+  const [targetType, setTargetType] = useState(String(existing?.targetType ?? "Vendor / Sponsor"));
+  const [vendorId, setVendorId] = useState(String(existing?.vendorId ?? existing?.targetId ?? data.vendors[0]?.id ?? ""));
+  const [participantId, setParticipantId] = useState(String(existing?.targetId ?? data.participants[0]?.id ?? ""));
+  const [category, setCategory] = useState(String(existing?.category ?? data.vendors.find((vendor) => vendor.id === vendorId)?.packageName ?? "Member PERDESTI"));
+  const [registrationType, setRegistrationType] = useState(String(existing?.registrationType ?? (targetType === "Vendor / Sponsor" ? "Sponsor package" : "Symposium")));
+  const [invoiceDate, setInvoiceDate] = useState(String(existing?.invoiceDate ?? todayIdDate()));
+  const [qty, setQty] = useState(Number(initialItem?.qty ?? 1));
+  const [manualUnit, setManualUnit] = useState(Number(initialItem?.unitPrice ?? 0));
+  const [discount, setDiscount] = useState(Number(initialItem?.discount ?? existing?.promoDeduction ?? 0));
+  const selectedVendor = data.vendors.find((vendor) => vendor.id === vendorId);
+  const selectedParticipant = data.participants.find((participant) => participant.id === participantId);
+  const product = targetType === "Vendor / Sponsor" ? "Sponsor package" : targetType === "Booth Only" ? "Booth" : registrationType.includes("Workshop") && !registrationType.includes("Symposium") ? "Workshop" : "Symposium";
+  const effectiveCategory = targetType === "Vendor / Sponsor" ? category : selectedParticipant?.category ?? category;
+  const pricing = findPricing(effectiveCategory, product, invoiceDate);
+  const suggestedUnit = selectedVendor && targetType === "Vendor / Sponsor" ? selectedVendor.packagePrice : pricing?.price ?? 0;
+  const unitPrice = manualUnit > 0 ? manualUnit : suggestedUnit;
+  const paidGroupCount = data.participants.filter((participant) => participant.pricingType === "Group" && participant.promoRole !== "Free").length;
+  const freeGroupCount = Math.floor(paidGroupCount / (data.event.promoMinimumPaidCount ?? 5)) * (data.event.promoFreeCount ?? 1);
+  const groupDiscount = targetType === "Group Registration" ? freeGroupCount * unitPrice : discount;
+  const finalDiscount = targetType === "Group Registration" ? groupDiscount : discount;
+  const total = qty * unitPrice - finalDiscount;
+  const autoBillTo = targetType === "Vendor / Sponsor" || targetType === "Booth Only" ? selectedVendor?.company : targetType === "Participant" || targetType === "Symposium Only" || targetType === "Workshop Only" ? selectedParticipant?.fullName : "";
+  const autoContact = targetType === "Vendor / Sponsor" || targetType === "Booth Only" ? selectedVendor?.pic : selectedParticipant?.whatsapp;
+  const disabled = { disabled: readOnly };
+  return (
+    <>
+      <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-3"><p className="font-semibold text-emeraldDeep">1. Invoice Target</p><p className="text-xs text-slate-500">Pilih alur invoice agar field dan harga mengikuti konteks.</p></div>
+      <Field label="Invoice Target Type"><Select name="targetType" value={targetType} onChange={(event) => setTargetType(event.target.value)} {...disabled}>{invoiceTargetTypes.map((type) => <option key={type}>{type}</option>)}</Select></Field>
+      <Field label="Invoice Number"><Input name="number" defaultValue={String(existing?.number ?? `${data.event.invoicePrefix}/${String(data.invoices.length + 1).padStart(3, "0")}`)} required {...disabled} /></Field>
+      {(targetType === "Vendor / Sponsor" || targetType === "Booth Only") && <Field label="Select Vendor"><Select name="vendorId" value={vendorId} onChange={(event) => { setVendorId(event.target.value); const vendor = data.vendors.find((item) => item.id === event.target.value); if (vendor) setCategory(vendor.packageName); }} {...disabled}><option value="">-</option>{data.vendors.map((vendor) => <option key={vendor.id} value={vendor.id}>{vendor.company}</option>)}</Select></Field>}
+      {(targetType === "Participant" || targetType === "Symposium Only" || targetType === "Workshop Only") && <Field label="Select Participant"><Select name="participantId" value={participantId} onChange={(event) => { setParticipantId(event.target.value); const participant = data.participants.find((item) => item.id === event.target.value); if (participant) setCategory(participant.category); }} {...disabled}><option value="">-</option>{data.participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.fullName}</option>)}</Select></Field>}
+      <Field label="Manual Bill To / Group Coordinator"><Input name="billTo" defaultValue={String(existing?.billTo ?? autoBillTo ?? "")} placeholder={autoBillTo || "Manual name"} required {...disabled} /></Field>
+      <Field label="PIC / Contact"><Input name="picContact" defaultValue={String(existing?.picContact ?? autoContact ?? "")} placeholder={autoContact || "WA/email/contact"} {...disabled} /></Field>
+
+      <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-3"><p className="font-semibold text-emeraldDeep">2. Registration / Package Details</p></div>
+      <Field label="Registration / Product Type"><Select name="registrationType" value={registrationType} onChange={(event) => setRegistrationType(event.target.value)} {...disabled}><option>Symposium</option><option>Workshop</option><option>Symposium + Workshop</option><option>Booth</option><option>Sponsor package</option><option>Custom</option></Select></Field>
+      <Field label="Category / Package"><Select name="category" value={category} onChange={(event) => setCategory(event.target.value)} {...disabled}><option>Member PERDESTI</option><option>Non-member PERDESTI</option><option>Dokter Umum</option><option>Internship / Koas / Mahasiswa</option><option>Resident / PPDS</option><option>Silver</option><option>Gold</option><option>Platinum</option><option>Custom</option></Select></Field>
+      <Field label="Invoice Date"><Input name="invoiceDate" type="date" value={invoiceDate} onChange={(event) => setInvoiceDate(event.target.value)} {...disabled} /></Field>
+      <Field label="Price Period"><Input name="pricePeriod" value={pricing?.period ?? "Manual / Custom"} readOnly /></Field>
+
+      <div className="md:col-span-2 rounded-lg border border-champagne/40 bg-champagne/10 p-3 text-sm"><strong>Price preview:</strong> {rupiah(unitPrice)} x {qty} - {rupiah(finalDiscount)} = <strong>{rupiah(total)}</strong><br /><span className="text-xs">{pricing?.notes ?? "Manual override aktif bila Unit Price diisi."}</span>{targetType === "Group Registration" && <span className="block text-xs">Promo 5+1: paid {paidGroupCount}, free {freeGroupCount}, deduction {rupiah(groupDiscount)}.</span>}</div>
+
+      <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-3"><p className="font-semibold text-emeraldDeep">3. Invoice Items</p></div>
+      <Field label="Item Description"><Input name="description" defaultValue={String(initialItem?.description ?? `${targetType} - ${registrationType}`)} required {...disabled} /></Field>
+      <Field label="Qty"><Input name="qty" type="number" value={qty} onChange={(event) => setQty(Number(event.target.value))} required {...disabled} /></Field>
+      <Field label="Unit Price"><Input name="unitPrice" type="number" value={manualUnit || suggestedUnit} onChange={(event) => setManualUnit(Number(event.target.value))} required {...disabled} /></Field>
+      <Field label="Discount / Promo Deduction"><Input name="discount" type="number" value={finalDiscount} onChange={(event) => setDiscount(Number(event.target.value))} {...disabled} /></Field>
+
+      <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-3"><p className="font-semibold text-emeraldDeep">4. Payment Terms</p></div>
+      <Field label="Due Date"><Input name="dueDate" type="date" defaultValue={String(existing?.dueDate ?? data.event.finalPaymentDeadline)} {...disabled} /></Field>
+      <Field label="Invoice Status"><Select name="status" defaultValue={String(existing?.status ?? "Draft")} {...disabled}><option>Draft</option><option>Sent</option><option>Cancelled</option></Select></Field>
+      <Field label="Handled By"><Select name="handledBy" defaultValue={String(existing?.handledBy ?? data.committee[0]?.name ?? "")} {...disabled}>{data.committee.map((member) => <option key={member.id}>{member.name}</option>)}</Select></Field>
+      <Field label="Bank Account"><Input defaultValue={data.event.bankAccount} disabled /></Field>
+
+      <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-3"><p className="font-semibold text-emeraldDeep">5. Agreement / Benefits</p></div>
+      <div className="md:col-span-2"><Field label="Special Notes / Agreement Notes"><Textarea name="specialNotes" defaultValue={String(existing?.specialNotes ?? existing?.notes ?? (targetType === "Group Registration" ? data.event.promoNotes : selectedVendor?.notes ?? ""))} {...disabled} /></Field></div>
+    </>
+  );
 }
 
 function collection(data: AppData, key: EditableKey): Record<string, unknown>[] {
@@ -869,7 +1210,26 @@ function buildRecord(key: EditableKey, form: FormData, existing: Record<string, 
   if (key === "participants") return { ok: true, name: fieldValue(form.get("fullName")), record: { ...existing, id, fullName: fieldValue(form.get("fullName")), title: fieldValue(form.get("title")), institution: fieldValue(form.get("institution")), whatsapp: fieldValue(form.get("whatsapp")), email: fieldValue(form.get("email")), category: fieldValue(form.get("category")), perdestiMember: false, symposium: true, workshop: false, workshopType: "-", pricingType: fieldValue(form.get("pricingType")), paymentStatus: fieldValue(form.get("paymentStatus")), badgeStatus: "Belum Cetak", certificateStatus: "Belum Terbit", attendanceStatus: "Belum Hadir", demo: existing?.demo } };
   if (key === "benefits") return { ok: true, name: fieldValue(form.get("name")), record: { ...existing, id, vendorId: fieldValue(form.get("vendorId")), name: fieldValue(form.get("name")), description: fieldValue(form.get("description")), quantity: Number(form.get("quantity")), dueDate: fieldValue(form.get("dueDate")), responsible: fieldValue(form.get("responsible")), status: fieldValue(form.get("status")), notes: fieldValue(form.get("notes")), demo: existing?.demo } };
   if (key === "files") return { ok: true, name: fieldValue(form.get("name")), record: { ...existing, id, vendorId: fieldValue(form.get("vendorId")), name: fieldValue(form.get("name")), required: form.get("required") === "true", uploaded: form.get("uploaded") === "true", dueDate: fieldValue(form.get("dueDate")), status: fieldValue(form.get("status")), reviewedBy: fieldValue(form.get("status")) === "Approved" ? data.event.contactPerson : String(existing?.reviewedBy ?? ""), notes: fieldValue(form.get("notes")), demo: existing?.demo } };
-  if (key === "invoices") return { ok: true, name: fieldValue(form.get("number")), record: { ...existing, id, number: fieldValue(form.get("number")), type: "Vendor sponsorship", billTo: fieldValue(form.get("billTo")), picContact: fieldValue(form.get("picContact")), invoiceDate: fieldValue(form.get("invoiceDate")), dueDate: fieldValue(form.get("dueDate")), items: [{ description: fieldValue(form.get("description")), qty: 1, unitPrice: Number(form.get("unitPrice")), discount: 0 }], dpPaid: verifiedPaid(id, data.payments), status: fieldValue(form.get("status")), registeredBy: currentUser, receivedBy: data.event.contactPerson, handledBy: fieldValue(form.get("handledBy")), notes: "", vendorId: fieldValue(form.get("vendorId")) || undefined, demo: existing?.demo } };
+  if (key === "invoices") {
+    const targetType = fieldValue(form.get("targetType")) as Invoice["targetType"];
+    const invoiceDate = fieldValue(form.get("invoiceDate"));
+    const vendor = data.vendors.find((item) => item.id === fieldValue(form.get("vendorId")));
+    const participant = data.participants.find((item) => item.id === fieldValue(form.get("participantId")));
+    const category = fieldValue(form.get("category"));
+    const registrationType = fieldValue(form.get("registrationType"));
+    const product = targetType === "Vendor / Sponsor" ? "Sponsor package" : targetType === "Booth Only" ? "Booth" : registrationType.includes("Workshop") && !registrationType.includes("Symposium") ? "Workshop" : "Symposium";
+    const pricing = findPricing(category, product, invoiceDate);
+    const manualUnit = Number(form.get("unitPrice"));
+    const unitPrice = manualUnit > 0 ? manualUnit : pricing?.price ?? vendor?.packagePrice ?? 0;
+    const qty = Number(form.get("qty") ?? 1);
+    const promoDeduction = Number(form.get("discount") ?? 0);
+    const targetId = targetType === "Participant" || targetType === "Symposium Only" || targetType === "Workshop Only" ? participant?.id : vendor?.id;
+    const billTo = targetType === "Participant" || targetType === "Symposium Only" || targetType === "Workshop Only" ? participant?.fullName ?? fieldValue(form.get("billTo")) : targetType === "Vendor / Sponsor" || targetType === "Booth Only" ? vendor?.company ?? fieldValue(form.get("billTo")) : fieldValue(form.get("billTo"));
+    const picContact = targetType === "Participant" || targetType === "Symposium Only" || targetType === "Workshop Only" ? participant?.whatsapp ?? fieldValue(form.get("picContact")) : vendor?.pic ?? fieldValue(form.get("picContact"));
+    const description = fieldValue(form.get("description")) || `${targetType} - ${registrationType}`;
+    const notes = targetType === "Group Registration" ? `${fieldValue(form.get("specialNotes"))}\n${data.event.promoNotes ?? ""}` : fieldValue(form.get("specialNotes"));
+    return { ok: true, name: fieldValue(form.get("number")), record: { ...existing, id, number: fieldValue(form.get("number")), type: targetType ?? "Custom / Other", targetType, targetId, targetName: billTo, category, registrationType, pricePeriod: pricing?.period ?? fieldValue(form.get("pricePeriod")), promoDeduction, paymentStatus: existing?.paymentStatus ?? "Unpaid", verificationStatus: existing?.verificationStatus ?? "No Payment", billTo, picContact, invoiceDate, dueDate: fieldValue(form.get("dueDate")), items: [{ description, qty, unitPrice, discount: promoDeduction }], dpPaid: verifiedPaid(id, data.payments), status: fieldValue(form.get("status")) as Invoice["status"], registeredBy: currentUser, receivedBy: data.event.contactPerson, handledBy: fieldValue(form.get("handledBy")), notes, specialNotes: notes, vendorId: vendor?.id, demo: existing?.demo } };
+  }
   if (key === "payments") {
     const targetType = fieldValue(form.get("targetType")) as Payment["targetType"];
     const linkedEntityId = targetType === "Participant" ? fieldValue(form.get("linkedParticipantId")) : targetType === "Vendor / Sponsor" ? fieldValue(form.get("linkedVendorId")) : "";
@@ -947,7 +1307,23 @@ function getReportRows(report: string, data: AppData): Record<string, unknown>[]
   return [];
 }
 
-function drawPdfHeader(doc: any, event: EventSettings, title: string) {
+async function loadImageData(url?: string) {
+  if (!url) return null;
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function drawPdfHeader(doc: any, event: EventSettings, title: string) {
   doc.setFillColor(251, 250, 245);
   doc.rect(0, 0, 210, 297, "F");
   doc.setFillColor(7, 94, 84);
@@ -956,15 +1332,21 @@ function drawPdfHeader(doc: any, event: EventSettings, title: string) {
   doc.setFontSize(9);
   doc.text(`${event.name} | ${event.dateRange}`, 14, 12);
   const logos = event.logos.slice().sort((a, b) => a.order - b.order).slice(0, 5);
-  logos.forEach((logo, index) => {
+  for (let index = 0; index < logos.length; index += 1) {
+    const logo = logos[index];
     const x = 14 + index * 36;
     doc.setDrawColor(200, 164, 93);
     doc.setFillColor(255, 255, 255);
     doc.roundedRect(x, 28, 28, 16, 2, 2, "FD");
-    doc.setTextColor(7, 94, 84);
-    doc.setFontSize(6);
-    doc.text(logo.name || "Logo", x + 14, 37, { align: "center", maxWidth: 24 });
-  });
+    const imageData = await loadImageData(logo.publicUrl);
+    if (imageData) {
+      doc.addImage(imageData, x + 2, 30, 24, 12, undefined, "FAST");
+    } else {
+      doc.setTextColor(7, 94, 84);
+      doc.setFontSize(6);
+      doc.text(logo.name || "Logo", x + 14, 37, { align: "center", maxWidth: 24 });
+    }
+  }
   doc.setTextColor(7, 94, 84);
   doc.setFontSize(12);
   doc.text(event.fullTitle, 14, 54, { maxWidth: 182 });
@@ -985,34 +1367,58 @@ function drawPdfFooter(doc: any, event: EventSettings) {
   doc.text(event.footerDisclaimer, 14, 291, { maxWidth: 180 });
 }
 
-function drawStamp(doc: any, event: EventSettings, x: number, y: number, show = true) {
+async function drawStamp(doc: any, event: EventSettings, x: number, y: number, show = true) {
   if (!show) return;
   doc.setDrawColor(200, 164, 93);
   doc.setFillColor(255, 255, 255);
   doc.roundedRect(x, y, 32, 22, 2, 2, "FD");
+  const imageData = await loadImageData(event.stampUrl);
+  if (imageData) {
+    doc.addImage(imageData, x + 3, y + 2, 26, 18, undefined, "FAST");
+    return;
+  }
   doc.setTextColor(7, 94, 84);
   doc.setFontSize(7);
   doc.text(event.stampLabel ?? "Stempel Resmi", x + 16, y + 9, { align: "center", maxWidth: 28 });
   doc.text("STAMP", x + 16, y + 17, { align: "center" });
 }
 
-function drawInvoicePdf(doc: any, data: AppData, invoice: Invoice, vendor?: Vendor) {
+async function drawSignature(doc: any, event: EventSettings, x: number, y: number) {
+  const imageData = await loadImageData(event.signatureUrl);
+  if (imageData) {
+    doc.addImage(imageData, x, y, 30, 14, undefined, "FAST");
+    return;
+  }
+  doc.setDrawColor(200, 164, 93);
+  doc.roundedRect(x, y, 30, 14, 2, 2);
+  doc.setFontSize(6.5);
+  doc.setTextColor(90, 100, 105);
+  doc.text("signature", x + 15, y + 8, { align: "center" });
+}
+
+async function drawInvoicePdf(doc: any, data: AppData, invoice: Invoice, vendor?: Vendor) {
   const total = invoiceTotal(invoice);
   const paid = verifiedPaid(invoice.id, data.payments);
+  const paymentStatus = derivePaymentStatus(invoice, data.payments);
+  const verificationStatus = deriveVerificationStatus(invoice, data.payments);
+  const targetType = invoiceTargetLabel(invoice);
   doc.setTextColor(30, 41, 59);
-  doc.setFontSize(10);
-  doc.text(`Invoice No: ${invoice.number}`, 14, 84);
-  doc.text(`Tanggal: ${invoice.invoiceDate}`, 14, 90);
-  doc.text(`Jatuh Tempo: ${invoice.dueDate}`, 14, 96);
-  doc.text(`Status: ${invoice.status}`, 150, 84);
-  doc.autoTable({ startY: 106, theme: "grid", head: [["Bill To / Customer", "Event / Package / Booth"]], body: [[`${invoice.billTo}\nPIC: ${invoice.picContact}\nWA: ${vendor?.whatsapp ?? "-"}\nEmail: ${vendor?.email ?? "-"}\nAddress: ${vendor ? "Sesuai data vendor" : "-"}`, `${data.event.dateRange}\n${data.event.symposium}\nPackage: ${vendor?.packageName ?? invoice.type}\nBooth: ${vendor?.boothNumber ?? "-"} (${vendor?.boothSize ?? "-"})`]], headStyles: { fillColor: [7, 94, 84], textColor: 255 }, styles: { fontSize: 9, cellPadding: 3, lineColor: [220, 225, 225] } });
-  doc.autoTable({ startY: doc.lastAutoTable.finalY + 7, theme: "grid", head: [["Item Description", "Qty", "Unit Price", "Discount", "Total"]], body: invoice.items.map((item) => [item.description, item.qty, rupiah(item.unitPrice), rupiah(item.discount), rupiah(item.qty * item.unitPrice - item.discount)]), headStyles: { fillColor: [7, 94, 84], textColor: 255 }, styles: { fontSize: 9, cellPadding: 3 }, columnStyles: { 0: { cellWidth: 82 }, 4: { halign: "right" } } });
-  doc.autoTable({ startY: doc.lastAutoTable.finalY + 7, theme: "grid", body: [["Subtotal", rupiah(total)], ["Discount", rupiah(invoice.items.reduce((sum, item) => sum + Number(item.discount), 0))], ["Grand Total", rupiah(total)], ["Total Paid Verified", rupiah(paid)], ["Pending Payment", rupiah(pendingPaid(invoice.id, data.payments))], ["Remaining Balance", rupiah(total - paid)], ["Payment Terms", `${data.event.bankAccount}\n${data.event.defaultTerms}\nFinal deadline: ${data.event.finalPaymentDeadline}`]], styles: { fontSize: 9, cellPadding: 3 }, columnStyles: { 0: { fontStyle: "bold", fillColor: [238, 246, 243], cellWidth: 52 }, 1: { halign: "right" } } });
-  const benefits = data.benefits.filter((benefit) => benefit.vendorId === invoice.vendorId);
-  if (benefits.length) doc.autoTable({ startY: doc.lastAutoTable.finalY + 7, theme: "grid", head: [["Benefit Included", "Qty", "Delivered Status / Notes"]], body: benefits.map((benefit) => [benefit.name, benefit.quantity, `${benefit.status} - ${benefit.notes}`]), headStyles: { fillColor: [7, 94, 84], textColor: 255 }, styles: { fontSize: 8, cellPadding: 2.5 } });
-  doc.autoTable({ startY: doc.lastAutoTable.finalY + 7, theme: "grid", head: [["Notes / Special Agreement"]], body: [[`${invoice.notes || vendor?.notes || "-"}\n${data.event.promoNotes ?? ""}`]], headStyles: { fillColor: [200, 164, 93], textColor: 255 }, styles: { fontSize: 8.5, cellPadding: 3 } });
-  const y = Math.min((doc.lastAutoTable?.finalY ?? 210) + 10, 235);
   doc.setFontSize(8.5);
+  doc.autoTable({ startY: 82, theme: "plain", body: [[`Invoice No\n${invoice.number}\nIssue: ${invoice.invoiceDate}\nDue: ${invoice.dueDate}`, `Bill To\n${invoice.billTo}\nPIC/Contact: ${invoice.picContact || "-"}\nTarget: ${targetType}`, `Status\nInvoice: ${invoice.status}\nPayment: ${paymentStatus}\nVerify: ${verificationStatus}`]], styles: { fontSize: 8.5, cellPadding: 2.5, textColor: [30, 41, 59] }, columnStyles: { 0: { cellWidth: 52, fillColor: [238, 246, 243] }, 1: { cellWidth: 78, fillColor: [255, 255, 255] }, 2: { cellWidth: 52, fillColor: [238, 246, 243] } } });
+  const targetSummary = targetType === "Vendor / Sponsor"
+    ? `Package: ${vendor?.packageName ?? invoice.category ?? "-"} | Booth: ${vendor?.boothNumber ?? "-"} (${vendor?.boothSize ?? "-"})`
+    : targetType === "Group Registration"
+      ? `Group invoice | ${invoice.notes?.includes("Promo") ? "Promo applied" : "Promo eligible if 5+1"}`
+      : `${invoice.registrationType ?? "-"} | Category: ${invoice.category ?? "-"} | Period: ${invoice.pricePeriod ?? "-"}`;
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, theme: "grid", head: [["Event / Package / Registration Summary"]], body: [[`${data.event.name} | ${data.event.dateRange}\n${targetSummary}`]], headStyles: { fillColor: [7, 94, 84], textColor: 255, fontSize: 8 }, styles: { fontSize: 8, cellPadding: 2.5 } });
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, theme: "grid", head: [["Item Description", "Qty", "Unit Price", "Discount", "Total"]], body: invoice.items.map((item) => [item.description, item.qty, rupiah(item.unitPrice), rupiah(item.discount), rupiah(item.qty * item.unitPrice - item.discount)]), headStyles: { fillColor: [7, 94, 84], textColor: 255, fontSize: 8 }, styles: { fontSize: 8, cellPadding: 2.2 }, columnStyles: { 0: { cellWidth: 86 }, 4: { halign: "right" } } });
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, theme: "grid", body: [["Grand Total", rupiah(total), "Paid", rupiah(paid)], ["Pending", rupiah(pendingPaid(invoice.id, data.payments)), "Remaining", rupiah(total - paid)], ["Bank / Terms", `${data.event.bankAccount}\n${data.event.defaultTerms}`, "Deadline", data.event.finalPaymentDeadline]], styles: { fontSize: 8, cellPadding: 2.4 }, columnStyles: { 0: { fontStyle: "bold", fillColor: [238, 246, 243] }, 2: { fontStyle: "bold", fillColor: [238, 246, 243] } } });
+  const benefits = data.benefits.filter((benefit) => benefit.vendorId === invoice.vendorId);
+  if (targetType === "Vendor / Sponsor" && benefits.length) doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, theme: "grid", head: [["Key Benefits (max 6)", "Qty", "Status"]], body: benefits.slice(0, 6).map((benefit) => [benefit.name, benefit.quantity, benefit.status]).concat(benefits.length > 6 ? [["Detail benefit lengkap tersedia pada lampiran benefit checklist.", "", ""]] : []), headStyles: { fillColor: [7, 94, 84], textColor: 255, fontSize: 8 }, styles: { fontSize: 7.5, cellPadding: 1.8 } });
+  if (targetType === "Group Registration" && invoice.promoDeduction) doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, theme: "grid", body: [["Promo 5 Peserta Dokter Free 1", `Deduction: ${rupiah(invoice.promoDeduction)}`], ["Note", data.event.promoNotes ?? ""]], styles: { fontSize: 7.5, cellPadding: 2 }, columnStyles: { 0: { fontStyle: "bold", fillColor: [238, 246, 243] } } });
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 3, theme: "grid", head: [["Notes / Special Agreement"]], body: [[`${invoice.specialNotes || invoice.notes || vendor?.notes || "-"}`]], headStyles: { fillColor: [200, 164, 93], textColor: 255, fontSize: 8 }, styles: { fontSize: 7.5, cellPadding: 2 } });
+  const y = Math.min((doc.lastAutoTable?.finalY ?? 205) + 7, 238);
+  doc.setFontSize(7.5);
   doc.text(`Registered by: ${invoice.registeredBy}`, 14, y);
   doc.text(`Received by: ${invoice.receivedBy}`, 14, y + 5);
   doc.text(`Handled by: ${invoice.handledBy}`, 14, y + 10);
@@ -1020,19 +1426,20 @@ function drawInvoicePdf(doc: any, data: AppData, invoice: Invoice, vendor?: Vend
   doc.text("Finance/Bendahara", 112, y + 32);
   doc.text("Verified by", 152, y);
   doc.text(data.event.contactPerson, 152, y + 32);
-  drawStamp(doc, data.event, 75, y - 2, data.event.showStampOnInvoice);
+  await drawSignature(doc, data.event, 112, y + 8);
+  await drawStamp(doc, data.event, 75, y - 2, data.event.showStampOnInvoice);
 }
 
-function drawReceiptPdf(doc: any, data: AppData, payment: Payment, invoice: Invoice) {
+async function drawReceiptPdf(doc: any, data: AppData, payment: Payment, invoice: Invoice) {
   const remaining = invoiceTotal(invoice) - verifiedPaid(invoice.id, data.payments);
   doc.autoTable({ startY: 84, theme: "grid", head: [["Receipt Detail", "Value"]], body: [["Receipt Number", `${data.event.receiptPrefix}/${payment.id.toUpperCase()}`], ["Invoice", invoice.number], ["Payer", payment.senderName], ["Payment Purpose", invoice.type], ["Amount", rupiah(payment.amount)], ["Payment Date", payment.date], ["Method", payment.method], ["Receiving Bank", payment.receivingBank], ["Payment Label", remaining <= 0 ? "Full Payment" : "DP / Partial Payment"], ["Remaining Balance", rupiah(Math.max(remaining, 0))], ["Verification", payment.verificationStatus], ["Received By", payment.receivedBy], ["Verified By", payment.verifiedBy ?? "-"], ["Notes", payment.notes]], headStyles: { fillColor: [7, 94, 84] }, styles: { fontSize: 9, cellPadding: 3 }, columnStyles: { 0: { fontStyle: "bold", fillColor: [238, 246, 243] } } });
   doc.text("Receipt ini valid setelah verifikasi oleh Finance/Bendahara.", 14, 220);
   doc.text("Bendahara / Finance", 140, 230);
   doc.text("(signature placeholder)", 140, 254);
-  drawStamp(doc, data.event, 92, 226, data.event.showStampOnReceipt);
+  await drawStamp(doc, data.event, 92, 226, data.event.showStampOnReceipt);
 }
 
-function drawAgreementPdf(doc: any, data: AppData, vendor: Vendor, letter: SponsorLetter) {
+async function drawAgreementPdf(doc: any, data: AppData, vendor: Vendor, letter: SponsorLetter) {
   const benefits = data.benefits.filter((benefit) => benefit.vendorId === vendor.id);
   const files = data.files.filter((file) => file.vendorId === vendor.id && file.required);
   doc.autoTable({ startY: 84, theme: "grid", body: [["Nomor Surat", letter.number], ["Perusahaan", vendor.company], ["PIC", `${vendor.pic} - ${vendor.position}`], ["Kontak", `${vendor.whatsapp} | ${vendor.email}`], ["Paket", vendor.packageName], ["Booth", `${vendor.boothNumber} (${vendor.boothSize})`], ["Nilai Kesepakatan", rupiah(vendor.packagePrice)], ["DP / Final Deadline", `${vendor.dpDeadline} / ${vendor.finalDeadline}`], ["Rekening Tujuan", data.event.bankAccount]], styles: { fontSize: 9 }, columnStyles: { 0: { fontStyle: "bold", fillColor: [238, 246, 243] } } });
@@ -1048,7 +1455,7 @@ function drawAgreementPdf(doc: any, data: AppData, vendor: Vendor, letter: Spons
   doc.text(letter.signerRole, 20, y + 48);
   doc.text(letter.committeeSignerName, 125, y + 42);
   doc.text(letter.committeeSignerRole, 125, y + 48);
-  drawStamp(doc, data.event, 86, y + 18, data.event.showStampOnAgreement);
+  await drawStamp(doc, data.event, 86, y + 18, data.event.showStampOnAgreement);
 }
 
 function drawBenefitPdf(doc: any, data: AppData, vendor: Vendor) {

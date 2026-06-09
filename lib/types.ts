@@ -8,6 +8,9 @@ export type EventLogo = {
   showOnAgreement: boolean;
   order: number;
   size: "small" | "medium" | "large";
+  showOnFormalDocuments?: boolean;
+  storagePath?: string;
+  publicUrl?: string;
 };
 
 export type EventSettings = {
@@ -40,6 +43,11 @@ export type EventSettings = {
   disclaimer?: string;
   paymentTerms?: string;
   stampLabel?: string;
+  stampPath?: string;
+  stampUrl?: string;
+  signatureLabel?: string;
+  signaturePath?: string;
+  signatureUrl?: string;
   showStampOnInvoice?: boolean;
   showStampOnReceipt?: boolean;
   showStampOnAgreement?: boolean;
@@ -153,6 +161,16 @@ export type Invoice = {
   id: string;
   number: string;
   type: string;
+  targetType?: "Vendor / Sponsor" | "Participant" | "Group Registration" | "Symposium Only" | "Workshop Only" | "Booth Only" | "Custom / Other";
+  paymentStatus?: "Unpaid" | "DP Paid" | "Partially Paid" | "Paid" | "Overdue";
+  verificationStatus?: "No Payment" | "Pending Verification" | "Verified" | "Rejected";
+  targetId?: string;
+  targetName?: string;
+  category?: string;
+  registrationType?: string;
+  pricePeriod?: string;
+  promoDeduction?: number;
+  specialNotes?: string;
   billTo: string;
   picContact: string;
   invoiceDate: string;
