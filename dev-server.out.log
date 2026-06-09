@@ -12,3 +12,18 @@
  GET / 200 in 8135ms
  GET / 200 in 67ms
  ✓ Compiled in 731ms (505 modules)
+   Reload env: .env.local
+ ✓ Compiled in 1063ms (505 modules)
+   Reload env: .env.local
+ ✓ Compiled in 4.1s (505 modules)
+ ✓ Compiled in 1847ms (505 modules)
+ ✓ Compiled in 667ms (505 modules)
+ ✓ Compiled in 987ms (505 modules)
+ ✓ Compiled in 532ms (505 modules)
+ ✓ Compiled in 545ms (505 modules)
+ ✓ Compiled in 868ms (505 modules)
+ ✓ Compiled in 653ms (505 modules)
+ ✓ Compiled in 639ms (505 modules)
+ ✓ Compiled in 400ms (505 modules)
+ ✓ Compiled in 262ms (505 modules)
+ ✓ Compiled in 196ms (505 modules)
