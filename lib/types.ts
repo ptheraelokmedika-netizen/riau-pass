@@ -1,6 +1,7 @@
 export type StatusTone = "emerald" | "gold" | "blue" | "red" | "gray";
 
 export type EventLogo = {
+  id?: string;
   name: string;
   purpose: string;
   showOnInvoice: boolean;

@@ -46,15 +46,45 @@ function row<T>(value: unknown) {
   return value as T;
 }
 
+function isMissingColumnError(error: unknown) {
+  const typed = error as { code?: string; message?: string } | null;
+  const message = String(typed?.message ?? "").toLowerCase();
+  return typed?.code === "42703" || message.includes("column") && message.includes("does not exist") || message.includes("schema cache");
+}
+
+async function fetchLatestEventRowFor2026() {
+  if (!supabase) throw new Error("Supabase client is not configured.");
+
+  const eventYearQuery = await supabase
+    .from("events")
+    .select("*")
+    .eq("event_year", 2026)
+    .order("updated_at", { ascending: false })
+    .limit(1);
+
+  if (!eventYearQuery.error) return row<Record<string, unknown>[] | null>(eventYearQuery.data)?.[0];
+  if (!isMissingColumnError(eventYearQuery.error)) throw eventYearQuery.error;
+
+  const yearQuery = await supabase
+    .from("events")
+    .select("*")
+    .eq("year", 2026)
+    .order("updated_at", { ascending: false })
+    .limit(1);
+
+  if (yearQuery.error) throw yearQuery.error;
+  return row<Record<string, unknown>[] | null>(yearQuery.data)?.[0];
+}
+
 function firstEvent(fallback: EventSettings, eventRow?: Record<string, unknown>, logos: Record<string, unknown>[] = []): EventSettings {
   if (!eventRow) return { ...fallback, logos: [] };
   return {
     ...fallback,
     id: String(eventRow.id),
-    name: String(eventRow.event_name ?? fallback.name),
-    year: Number(eventRow.event_year ?? fallback.year),
+    name: String(eventRow.name ?? eventRow.event_name ?? fallback.name),
+    year: Number(eventRow.year ?? eventRow.event_year ?? fallback.year),
     fullTitle: String(eventRow.full_title ?? fallback.fullTitle),
-    dateRange: String(eventRow.date_range ?? fallback.dateRange),
+    dateRange: String(eventRow.event_date_range ?? eventRow.date_range ?? fallback.dateRange),
     symposium: String(eventRow.symposium_date_venue ?? fallback.symposium),
     workshop: String(eventRow.workshop_date_venue ?? fallback.workshop),
     exhibition: String(eventRow.exhibition_date_venue ?? fallback.exhibition),
@@ -65,22 +95,29 @@ function firstEvent(fallback: EventSettings, eventRow?: Record<string, unknown>,
     secretariat: String(eventRow.secretariat_address ?? fallback.secretariat),
     invoicePrefix: String(eventRow.invoice_prefix ?? fallback.invoicePrefix),
     receiptPrefix: String(eventRow.receipt_prefix ?? fallback.receiptPrefix),
-    agreementPrefix: String(eventRow.agreement_prefix ?? fallback.agreementPrefix),
+    agreementPrefix: String(eventRow.sponsor_agreement_prefix ?? eventRow.agreement_prefix ?? fallback.agreementPrefix),
     footerDisclaimer: String(eventRow.footer_disclaimer ?? fallback.footerDisclaimer),
     defaultTerms: String(eventRow.default_payment_terms ?? fallback.defaultTerms),
     defaultDpPercentage: Number(eventRow.default_dp_percentage ?? fallback.defaultDpPercentage),
-    finalPaymentDeadline: String(eventRow.default_final_payment_deadline ?? fallback.finalPaymentDeadline),
+    finalPaymentDeadline: String(eventRow.final_payment_deadline ?? eventRow.default_final_payment_deadline ?? fallback.finalPaymentDeadline),
+    stampLabel: String(eventRow.stamp_label ?? fallback.stampLabel ?? "Stempel Resmi PERDESTI / PASS"),
+    stampPath: String(eventRow.stamp_path ?? eventRow.stamp_url ?? ""),
+    stampUrl: String(eventRow.stamp_url ?? ""),
+    signatureLabel: String(eventRow.signature_name ?? fallback.signatureLabel ?? "Finance/Bendahara Signature"),
+    signaturePath: String(eventRow.signature_path ?? eventRow.signature_image_url ?? ""),
+    signatureUrl: String(eventRow.signature_image_url ?? eventRow.signature_url ?? ""),
     logos: logos.map((logo) => ({
-      name: String(logo.logo_name ?? "Logo"),
-      purpose: String(logo.logo_name ?? "Logo"),
+      id: String(logo.id ?? ""),
+      name: String(logo.name ?? logo.logo_name ?? "Logo"),
+      purpose: String(logo.name ?? logo.logo_name ?? "Logo"),
       showOnInvoice: Boolean(logo.show_on_invoice),
       showOnReceipt: Boolean(logo.show_on_receipt),
-      showOnAgreement: Boolean(logo.show_on_agreement),
+      showOnAgreement: Boolean(logo.show_on_sponsor_agreement ?? logo.show_on_agreement),
       showOnFormalDocuments: Boolean(logo.show_on_formal_documents),
       order: Number(logo.logo_order ?? 1),
       size: (logo.logo_size as "small" | "medium" | "large") ?? "medium",
-      storagePath: String(logo.file_path ?? ""),
-      publicUrl: String(logo.public_url ?? "")
+      storagePath: String(logo.logo_path ?? logo.file_path ?? logo.file_url ?? ""),
+      publicUrl: String(logo.logo_url ?? logo.public_url ?? logo.file_url ?? "")
     }))
   };
 }
@@ -88,9 +125,7 @@ function firstEvent(fallback: EventSettings, eventRow?: Record<string, unknown>,
 export async function fetchSupabaseAppData(fallbackEvent: EventSettings): Promise<AppDataShape> {
   if (!supabase) throw new Error("Supabase client is not configured.");
 
-  const { data: eventRows, error: eventError } = await supabase.from("events").select("*").order("event_year", { ascending: false }).limit(1);
-  if (eventError) throw eventError;
-  const eventRow = row<Record<string, unknown>[] | null>(eventRows)?.[0];
+  const eventRow = await fetchLatestEventRowFor2026();
   const eventId = eventRow?.id ? String(eventRow.id) : "";
 
   const [logos, committee, vendors, participants, booths, benefits, files, invoices, invoiceItems, payments, documents, logs] = await Promise.all([
@@ -263,7 +298,30 @@ export async function fetchSupabaseAppData(fallbackEvent: EventSettings): Promis
 async function ensureEventId(event: EventSettings) {
   if (!supabase) throw new Error("Supabase client is not configured.");
   if (isUuid(event.id)) return event.id;
-  const { data, error } = await supabase.from("events").insert({
+  const existingEvent = await fetchLatestEventRowFor2026();
+  if (existingEvent?.id) return String(existingEvent.id);
+
+  const currentPayload = {
+    name: event.name,
+    year: event.year,
+    full_title: event.fullTitle,
+    event_date_range: event.dateRange,
+    bank_account: event.bankAccount,
+    contact_person: event.contactPerson,
+    invoice_prefix: event.invoicePrefix,
+    receipt_prefix: event.receiptPrefix,
+    sponsor_agreement_prefix: event.agreementPrefix,
+    footer_disclaimer: event.footerDisclaimer,
+    default_payment_terms: event.defaultTerms,
+    default_dp_percentage: event.defaultDpPercentage,
+    final_payment_deadline: event.finalPaymentDeadline,
+    stamp_url: event.stampUrl || null,
+    signature_image_url: event.signatureUrl || null
+  };
+  const currentInsert = await supabase.from("events").insert(currentPayload).select("id").single();
+  if (!currentInsert.error) return String(currentInsert.data.id);
+
+  const legacyPayload = {
     event_name: event.name,
     event_year: event.year,
     full_title: event.fullTitle,
@@ -276,10 +334,126 @@ async function ensureEventId(event: EventSettings) {
     footer_disclaimer: event.footerDisclaimer,
     default_payment_terms: event.defaultTerms,
     default_dp_percentage: event.defaultDpPercentage,
-    default_final_payment_deadline: event.finalPaymentDeadline
-  }).select("id").single();
-  if (error) throw error;
-  return String(data.id);
+    default_final_payment_deadline: event.finalPaymentDeadline || null,
+    stamp_url: event.stampUrl || null,
+    signature_image_url: event.signatureUrl || null
+  };
+  const legacyInsert = await supabase.from("events").insert(legacyPayload).select("id").single();
+  if (legacyInsert.error) throw new Error(`${currentInsert.error.message}; fallback schema: ${legacyInsert.error.message}`);
+  return String(legacyInsert.data.id);
+}
+
+export async function saveSupabaseEventSettings(event: EventSettings) {
+  if (!supabase) return event;
+  const eventId = await ensureEventId(event);
+  const currentPayload = {
+    name: event.name,
+    year: event.year,
+    full_title: event.fullTitle,
+    event_date_range: event.dateRange,
+    bank_account: event.bankAccount,
+    contact_person: event.contactPerson,
+    email: event.email,
+    instagram: event.instagram,
+    secretariat_address: event.secretariat,
+    invoice_prefix: event.invoicePrefix,
+    receipt_prefix: event.receiptPrefix,
+    sponsor_agreement_prefix: event.agreementPrefix,
+    footer_disclaimer: event.footerDisclaimer,
+    default_payment_terms: event.defaultTerms,
+    default_dp_percentage: event.defaultDpPercentage,
+    final_payment_deadline: event.finalPaymentDeadline || null,
+    stamp_url: event.stampUrl || null,
+    signature_image_url: event.signatureUrl || null,
+    signature_name: event.signatureLabel || null
+  };
+  const legacyPayload = {
+    event_name: event.name,
+    event_year: event.year,
+    full_title: event.fullTitle,
+    date_range: event.dateRange,
+    bank_account: event.bankAccount,
+    contact_person: event.contactPerson,
+    email: event.email,
+    instagram: event.instagram,
+    secretariat_address: event.secretariat,
+    invoice_prefix: event.invoicePrefix,
+    receipt_prefix: event.receiptPrefix,
+    agreement_prefix: event.agreementPrefix,
+    footer_disclaimer: event.footerDisclaimer,
+    default_payment_terms: event.defaultTerms,
+    default_dp_percentage: event.defaultDpPercentage,
+    default_final_payment_deadline: event.finalPaymentDeadline || null,
+    stamp_url: event.stampUrl || null,
+    signature_image_url: event.signatureUrl || null,
+    signature_name: event.signatureLabel || null
+  };
+  const currentUpdate = await supabase.from("events").update(currentPayload).eq("id", eventId);
+  if (currentUpdate.error) {
+    const legacyUpdate = await supabase.from("events").update(legacyPayload).eq("id", eventId);
+    if (legacyUpdate.error) throw new Error(`${currentUpdate.error.message}; fallback schema: ${legacyUpdate.error.message}`);
+  }
+  const optionalEventColumns = [
+    { stamp_path: event.stampPath || null },
+    { signature_path: event.signaturePath || null },
+    { signature_url: event.signatureUrl || null }
+  ];
+  for (const optionalPayload of optionalEventColumns) {
+    await supabase.from("events").update(optionalPayload).eq("id", eventId);
+  }
+  return { ...event, id: eventId };
+}
+
+export async function saveSupabaseEventLogo(event: EventSettings, logo: EventSettings["logos"][number]) {
+  if (!supabase) return logo;
+  const eventId = await ensureEventId(event);
+  const currentPayload = {
+    ...(isUuid(logo.id) ? { id: logo.id } : {}),
+    event_id: eventId,
+    name: logo.name,
+    file_url: logo.publicUrl || null,
+    show_on_invoice: logo.showOnInvoice,
+    show_on_receipt: logo.showOnReceipt,
+    show_on_sponsor_agreement: logo.showOnAgreement,
+    show_on_formal_documents: logo.showOnFormalDocuments ?? true,
+    logo_order: logo.order,
+    logo_size: logo.size
+  };
+  const legacyPayload = {
+    ...(isUuid(logo.id) ? { id: logo.id } : {}),
+    event_id: eventId,
+    logo_name: logo.name,
+    file_path: logo.storagePath || null,
+    file_url: logo.publicUrl || null,
+    show_on_invoice: logo.showOnInvoice,
+    show_on_receipt: logo.showOnReceipt,
+    show_on_agreement: logo.showOnAgreement,
+    show_on_formal_documents: logo.showOnFormalDocuments ?? true,
+    logo_order: logo.order,
+    logo_size: logo.size
+  };
+  const currentUpsert = await supabase.from("event_logos").upsert(currentPayload).select("*").single();
+  const logoResult = currentUpsert.error
+    ? await supabase.from("event_logos").upsert(legacyPayload).select("*").single()
+    : currentUpsert;
+  if (currentUpsert.error && logoResult.error) throw new Error(`${currentUpsert.error.message}; fallback schema: ${logoResult.error.message}`);
+  if (logoResult.error) throw logoResult.error;
+  const data = row<Record<string, unknown>>(logoResult.data);
+  const logoId = String(data.id);
+  const optionalLogoColumns = [
+    { logo_path: logo.storagePath || null },
+    { logo_url: logo.publicUrl || null },
+    { public_url: logo.publicUrl || null }
+  ];
+  for (const optionalPayload of optionalLogoColumns) {
+    await supabase.from("event_logos").update(optionalPayload).eq("id", logoId);
+  }
+  return {
+    ...logo,
+    id: logoId,
+    storagePath: String(data.file_url ?? logo.storagePath ?? ""),
+    publicUrl: String(data.file_url ?? logo.publicUrl ?? "")
+  };
 }
 
 export async function upsertSupabaseRecord(key: string, record: Record<string, unknown>, event: EventSettings) {
