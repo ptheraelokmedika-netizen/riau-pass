@@ -136,7 +136,8 @@ const reportOptions = [
   "Payment verification report",
   "Committee handler report",
   "Activity log report",
-  "Sponsor agreement report"
+  "Sponsor agreement report",
+  "Promo usage report"
 ];
 
 function withDemo<T extends { id: string }>(rows: T[]) {
@@ -149,7 +150,24 @@ function initialData(): AppData {
     { id: "doc-2", name: "Logo PT Dermavita.png", type: "Vendor Logo", relatedName: "PT Dermavita Estetika", status: "Approved", createdAt: new Date().toISOString(), notes: "Demo logo metadata", demo: true }
   ];
   return {
-    event: { ...seedEvent, logos: seedEvent.logos.map((logo) => ({ ...logo })) },
+    event: {
+      ...seedEvent,
+      stampLabel: seedEvent.stampLabel ?? "Stempel Resmi PERDESTI / PASS",
+      showStampOnInvoice: seedEvent.showStampOnInvoice ?? true,
+      showStampOnReceipt: seedEvent.showStampOnReceipt ?? true,
+      showStampOnAgreement: seedEvent.showStampOnAgreement ?? true,
+      showStampOnFormalDocuments: seedEvent.showStampOnFormalDocuments ?? true,
+      promoName: seedEvent.promoName ?? "5 Peserta Dokter Free 1",
+      promoType: seedEvent.promoType ?? "Group Registration",
+      promoStartDate: seedEvent.promoStartDate ?? "2026-01-01",
+      promoEndDate: seedEvent.promoEndDate ?? "2026-06-30",
+      promoCategories: seedEvent.promoCategories ?? "Member PERDESTI, Non-member PERDESTI, Dokter Umum",
+      promoMinimumPaidCount: seedEvent.promoMinimumPaidCount ?? 5,
+      promoFreeCount: seedEvent.promoFreeCount ?? 1,
+      promoActive: seedEvent.promoActive ?? true,
+      promoNotes: seedEvent.promoNotes ?? "Promo group registration 5 peserta dokter berbayar mendapatkan 1 peserta free. Berlaku hingga 30 Juni 2026.",
+      logos: seedEvent.logos.map((logo) => ({ ...logo }))
+    },
     committee: withDemo(seedCommittee),
     vendors: withDemo(seedVendors),
     participants: withDemo(seedParticipants),
@@ -509,7 +527,7 @@ export default function Home() {
           {active === "committee" && <CrudPanel title="Committee / Panitia" subtitle="Tambah, lihat, edit, hapus panitia dan role akses." primary="Tambah Panitia" rows={filtered(data.committee)} columns={["name", "role", "whatsapp", "email", "accessRole"]} getName={(row) => String(row.name)} onAdd={() => openModal("committee", "add")} onView={(id) => openModal("committee", "view", id)} onEdit={(id) => openModal("committee", "edit", id)} onDelete={deleteRecord} moduleKey="committee" />}
           {active === "vendors" && <VendorPanel data={data} filtered={filtered(data.vendors)} query={query} setQuery={setQuery} statusFilter={statusFilter} setStatusFilter={setStatusFilter} openModal={openModal} deleteRecord={deleteRecord} setDetailVendorId={setDetailVendorId} generatePdf={generatePdf} />}
           {active === "participants" && <CrudPanel title="Peserta / Participants" subtitle="Registrasi peserta individual dan status badge/sertifikat." primary="Tambah Peserta" rows={filtered(data.participants)} columns={["fullName", "institution", "category", "paymentStatus", "badgeStatus"]} getName={(row) => String(row.fullName)} onAdd={() => openModal("participants", "add")} onView={(id) => openModal("participants", "view", id)} onEdit={(id) => openModal("participants", "edit", id)} onDelete={deleteRecord} moduleKey="participants" />}
-          {active === "groups" && <GroupPanel participants={data.participants} invoices={data.invoices} />}
+          {active === "groups" && <GroupPanel data={data} saveData={saveData} />}
           {active === "booths" && <BoothPanel data={data} rows={filtered(data.booths)} openModal={openModal} deleteRecord={deleteRecord} />}
           {active === "benefits" && <BenefitPanel data={data} rows={filtered(data.benefits)} openModal={openModal} deleteRecord={deleteRecord} generatePdf={generatePdf} />}
           {active === "files" && <FilePanel data={data} rows={filtered(data.files)} openModal={openModal} deleteRecord={deleteRecord} saveData={saveData} />}
@@ -584,7 +602,7 @@ function InvoicePanel({ data, rows, openModal, deleteRecord, generatePdf, archiv
 }
 
 function PaymentPanel({ data, rows, openModal, deleteRecord, verifyPayment, generatePdf, copyMessage, saveMessage }: { data: AppData; rows: Record<string, unknown>[]; openModal: (key: EditableKey, mode: "add" | "edit" | "view", id?: string) => void; deleteRecord: (key: EditableKey, id: string, name: string) => void; verifyPayment: (id: string, accepted: boolean) => void; generatePdf: (kind: "invoice" | "receipt" | "agreement" | "report" | "benefit", id?: string, archive?: boolean, openPrint?: boolean) => void; copyMessage: (message: string, label: string) => Promise<void>; saveMessage: (message: WhatsAppMessage) => void }) {
-  return <Card><SectionTitle title="Pembayaran / Receipt / Bukti Transfer" subtitle="Pending payment tidak dihitung lunas sampai diverifikasi." action={<Toolbar primary="Tambah Pembayaran" onAdd={() => openModal("payments", "add")} />} /><Table><thead><tr><Th>Invoice</Th><Th>Tanggal</Th><Th>Jumlah</Th><Th>Pengirim</Th><Th>Status</Th><Th>Diterima</Th><Th>Aksi</Th></tr></thead><tbody>{rows.map((row) => { const payment = row as Payment; const invoice = data.invoices.find((item) => item.id === payment.invoiceId); const message = `Selamat siang Bapak/Ibu/Dr./Tim ${payment.senderName}, pembayaran sebesar ${rupiah(payment.amount)} untuk invoice ${invoice?.number ?? "-"} sudah kami terima${payment.verificationStatus === "Verified" ? " dan verifikasi" : " dan sedang menunggu verifikasi"}. Terima kasih.`; return <tr key={payment.id}><Td>{invoice?.number}</Td><Td>{payment.date}</Td><Td>{rupiah(payment.amount)}</Td><Td>{payment.senderName}</Td><Td><Badge tone={tone(payment.verificationStatus)}>{payment.verificationStatus}</Badge></Td><Td>{payment.receivedBy}</Td><Td><RowActions onView={() => openModal("payments", "view", payment.id)} onEdit={() => openModal("payments", "edit", payment.id)} onDelete={() => deleteRecord("payments", payment.id, payment.senderName)} extra={<>{payment.verificationStatus === "Pending" && <><Button variant="ghost" onClick={() => verifyPayment(payment.id, true)}>Verify</Button><Button variant="ghost" onClick={() => verifyPayment(payment.id, false)}>Reject</Button></>}{payment.verificationStatus === "Verified" && <Button variant="ghost" onClick={() => generatePdf("receipt", payment.id, true)}><ReceiptText size={15} /></Button>}<Button variant="ghost" onClick={() => { copyMessage(message, payment.id); saveMessage({ id: uid("wa"), type: "Send receipt", recipient: payment.senderName, phone: "", text: message }); }}><Copy size={15} /></Button></>} /></Td></tr>; })}</tbody></Table></Card>;
+  return <Card><SectionTitle title="Pembayaran / Receipt / Bukti Transfer" subtitle="Pending payment tidak dihitung lunas sampai diverifikasi. Target pembayaran bisa vendor, peserta, group, atau custom." action={<Toolbar primary="Tambah Pembayaran" onAdd={() => openModal("payments", "add")} />} /><Table><thead><tr><Th>Target</Th><Th>Invoice</Th><Th>Tanggal</Th><Th>Jumlah</Th><Th>Pengirim</Th><Th>Status</Th><Th>Diterima</Th><Th>Aksi</Th></tr></thead><tbody>{rows.map((row) => { const payment = row as Payment; const invoice = data.invoices.find((item) => item.id === payment.invoiceId); const message = `Selamat siang Bapak/Ibu/Dr./Tim ${payment.linkedEntityName ?? payment.senderName}, pembayaran sebesar ${rupiah(payment.amount)} untuk invoice ${invoice?.number ?? "-"} sudah kami terima${payment.verificationStatus === "Verified" ? " dan verifikasi" : " dan sedang menunggu verifikasi"}. Terima kasih.`; return <tr key={payment.id}><Td>{payment.targetType ?? "Vendor / Sponsor"}<br /><span className="text-xs">{payment.linkedEntityName ?? "-"}</span></Td><Td>{invoice?.number}<br /><span className="text-xs">{payment.specialAgreement}</span></Td><Td>{payment.date}</Td><Td>{rupiah(payment.amount)}</Td><Td>{payment.senderName}</Td><Td><Badge tone={tone(payment.verificationStatus)}>{payment.verificationStatus}</Badge></Td><Td>{payment.receivedBy}</Td><Td><RowActions onView={() => openModal("payments", "view", payment.id)} onEdit={() => openModal("payments", "edit", payment.id)} onDelete={() => deleteRecord("payments", payment.id, payment.senderName)} extra={<>{payment.verificationStatus === "Pending" && <><Button variant="ghost" onClick={() => verifyPayment(payment.id, true)}>Verify</Button><Button variant="ghost" onClick={() => verifyPayment(payment.id, false)}>Reject</Button></>}{payment.verificationStatus === "Verified" && <Button variant="ghost" onClick={() => generatePdf("receipt", payment.id, true)}><ReceiptText size={15} /></Button>}<Button variant="ghost" onClick={() => { copyMessage(message, payment.id); saveMessage({ id: uid("wa"), type: "Send receipt", recipient: payment.senderName, phone: "", text: message }); }}><Copy size={15} /></Button></>} /></Td></tr>; })}</tbody></Table></Card>;
 }
 
 function ArchivePanel({ rows, openModal, deleteRecord }: { rows: Record<string, unknown>[]; openModal: (key: EditableKey, mode: "add" | "edit" | "view", id?: string) => void; deleteRecord: (key: EditableKey, id: string, name: string) => void }) {
@@ -627,9 +645,64 @@ function ReportPreview({ rows }: { rows: Record<string, unknown>[] }) {
   return <Table><thead><tr>{columns.map((col) => <Th key={col}>{col}</Th>)}</tr></thead><tbody>{rows.slice(0, 20).map((row, index) => <tr key={index}>{columns.map((col) => <Td key={col}>{renderCell(row[col])}</Td>)}</tr>)}</tbody></Table>;
 }
 
-function GroupPanel({ participants, invoices }: { participants: Participant[]; invoices: Invoice[] }) {
-  const grouped = participants.filter((item) => item.pricingType === "Group");
-  return <Card><SectionTitle title="Group Registration" subtitle="MVP group registration, termasuk contoh register 5 get 1 free." action={<Button><Plus size={16} /> Tambah Group</Button>} />{grouped.length ? <Table><thead><tr><Th>Coordinator</Th><Th>Participants</Th><Th>Paid Count</Th><Th>Free Count</Th><Th>Invoice</Th><Th>Status</Th></tr></thead><tbody><tr><Td>Koordinator Group Demo</Td><Td>{grouped.map((item) => item.fullName).join(", ")}</Td><Td>5</Td><Td>1</Td><Td>{invoices[0]?.number}</Td><Td><Badge tone="gold">DP Paid</Badge></Td></tr></tbody></Table> : <EmptyState title="Belum ada group" body="Tambahkan peserta dengan pricing type Group." />}</Card>;
+function GroupPanel({ data, saveData }: { data: AppData; saveData: (updater: (current: AppData) => AppData, message: string, action?: [string, string, string, string?]) => void }) {
+  const grouped = data.participants.filter((item) => item.pricingType === "Group" || item.groupReference);
+  const paidCount = grouped.filter((item) => item.promoRole !== "Free").length;
+  const configuredMin = data.event.promoMinimumPaidCount ?? 5;
+  const configuredFree = data.event.promoFreeCount ?? 1;
+  const freeCount = Math.floor(paidCount / configuredMin) * configuredFree;
+  const normalUnit = 1500000;
+  const normalTotal = (paidCount + freeCount) * normalUnit;
+  const finalTotal = paidCount * normalUnit;
+  const addGroup = () => {
+    const groupReference = `GRP-PASS-${data.event.year}-${String(Date.now()).slice(-4)}`;
+    saveData(
+      (current) => {
+        const paid = Array.from({ length: configuredMin }, (_, index) => ({
+          id: uid("par"),
+          fullName: `Peserta Group ${index + 1}`,
+          title: "dr.",
+          institution: "Group Registration",
+          whatsapp: "",
+          email: "",
+          category: "Dokter Umum",
+          perdestiMember: false,
+          symposium: true,
+          workshop: false,
+          workshopType: "-",
+          pricingType: "Group",
+          paymentStatus: "Belum Lunas",
+          badgeStatus: "Belum Cetak",
+          certificateStatus: "Belum Terbit",
+          attendanceStatus: "Belum Hadir",
+          groupReference,
+          promoRole: "Paid" as const
+        }));
+        const free = Array.from({ length: configuredFree }, (_, index) => ({
+          ...paid[0],
+          id: uid("par-free"),
+          fullName: `Peserta Free Promo ${index + 1}`,
+          promoRole: "Free" as const,
+          paymentStatus: "Free Pass"
+        }));
+        return { ...current, participants: [...paid, ...free, ...current.participants] };
+      },
+      "Group registration promo dibuat.",
+      ["Created group registration", "Group Registration", groupReference, data.event.promoNotes]
+    );
+  };
+  return (
+    <Card>
+      <SectionTitle title="Group Registration" subtitle="Promo otomatis: 5 peserta dokter berbayar mendapat 1 peserta free hingga 30 Juni 2026." action={<Button onClick={addGroup}><Plus size={16} /> Tambah Group Promo</Button>} />
+      <div className="mb-4 grid gap-3 md:grid-cols-4">
+        <Card><p className="text-sm text-slate-500">Paid participants</p><p className="text-2xl font-bold">{paidCount}</p></Card>
+        <Card><p className="text-sm text-slate-500">Free promo seats</p><p className="text-2xl font-bold">{freeCount}</p></Card>
+        <Card><p className="text-sm text-slate-500">Normal total</p><p className="text-xl font-bold">{rupiah(normalTotal)}</p></Card>
+        <Card><p className="text-sm text-slate-500">Final total</p><p className="text-xl font-bold text-emeraldDeep">{rupiah(finalTotal)}</p></Card>
+      </div>
+      {grouped.length ? <Table><thead><tr><Th>Group Ref</Th><Th>Participant</Th><Th>Category</Th><Th>Paid/Free</Th><Th>Status</Th><Th>Promo Note</Th></tr></thead><tbody>{grouped.map((participant) => <tr key={participant.id}><Td>{participant.groupReference ?? "-"}</Td><Td>{participant.fullName}</Td><Td>{participant.category}</Td><Td><Badge tone={participant.promoRole === "Free" ? "gold" : "emerald"}>{participant.promoRole ?? "Paid"}</Badge></Td><Td>{participant.paymentStatus}</Td><Td>{data.event.promoNotes}</Td></tr>)}</tbody></Table> : <EmptyState title="Belum ada group" body="Klik Tambah Group Promo untuk membuat contoh group yang bisa diedit di modul Peserta." />}
+    </Card>
+  );
 }
 
 function SettingsPanel({ data, setData, notify, log, exportBackup }: { data: AppData; setData: (data: AppData) => void; notify: (message: string) => void; log: (action: string, entityType: string, entityName: string, notes?: string) => void; exportBackup: () => void }) {
@@ -650,16 +723,47 @@ function EventSettingsPanel({ data, setData, notify, log }: { data: AppData; set
   const updateEvent = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    setData((current) => ({ ...current, event: { ...current.event, name: fieldValue(form.get("name")), year: Number(form.get("year")), fullTitle: fieldValue(form.get("fullTitle")), bankAccount: fieldValue(form.get("bankAccount")), contactPerson: fieldValue(form.get("contactPerson")), footerDisclaimer: fieldValue(form.get("footerDisclaimer")) } }));
+    setData((current) => ({ ...current, event: { ...current.event, name: fieldValue(form.get("name")), year: Number(form.get("year")), fullTitle: fieldValue(form.get("fullTitle")), bankAccount: fieldValue(form.get("bankAccount")), contactPerson: fieldValue(form.get("contactPerson")), footerDisclaimer: fieldValue(form.get("footerDisclaimer")), stampLabel: fieldValue(form.get("stampLabel")), showStampOnInvoice: form.get("showStampOnInvoice") === "on", showStampOnReceipt: form.get("showStampOnReceipt") === "on", showStampOnAgreement: form.get("showStampOnAgreement") === "on", showStampOnFormalDocuments: form.get("showStampOnFormalDocuments") === "on", promoName: fieldValue(form.get("promoName")), promoType: fieldValue(form.get("promoType")), promoStartDate: fieldValue(form.get("promoStartDate")), promoEndDate: fieldValue(form.get("promoEndDate")), promoCategories: fieldValue(form.get("promoCategories")), promoMinimumPaidCount: Number(form.get("promoMinimumPaidCount")), promoFreeCount: Number(form.get("promoFreeCount")), promoActive: form.get("promoActive") === "on", promoNotes: fieldValue(form.get("promoNotes")) } }));
     notify("Event Settings disimpan.");
     log("Updated event settings", "Event", data.event.name);
   };
   const updateLogo = (index: number, key: string, value: string | boolean | number) => setData((current) => ({ ...current, event: { ...current.event, logos: current.event.logos.map((logo, logoIndex) => logoIndex === index ? { ...logo, [key]: value } : logo) } }));
-  return <Card><SectionTitle title="Event Settings" subtitle="Konfigurasi multi-year dan logo PDF 4-5 logo." /><form onSubmit={updateEvent} className="grid gap-4 md:grid-cols-2"><Field label="Nama event"><Input name="name" defaultValue={data.event.name} required /></Field><Field label="Tahun"><Input name="year" type="number" defaultValue={data.event.year} required /></Field><Field label="Judul lengkap"><Input name="fullTitle" defaultValue={data.event.fullTitle} required /></Field><Field label="Rekening bank"><Input name="bankAccount" defaultValue={data.event.bankAccount} /></Field><Field label="Contact person"><Input name="contactPerson" defaultValue={data.event.contactPerson} /></Field><div className="md:col-span-2"><Field label="Disclaimer footer"><Textarea name="footerDisclaimer" defaultValue={data.event.footerDisclaimer} /></Field></div><div className="md:col-span-2"><Button type="submit"><Save size={16} /> Simpan Event Settings</Button></div></form><h3 className="mt-8 text-lg font-bold text-emeraldDeep">Logo Dokumen</h3><Table><thead><tr><Th>Logo</Th><Th>Invoice</Th><Th>Receipt</Th><Th>Surat</Th><Th>Formal</Th><Th>Order</Th><Th>Size</Th><Th>Upload</Th></tr></thead><tbody>{data.event.logos.map((logo, index) => <tr key={`${logo.name}-${index}`}><Td><Input value={logo.name} onChange={(event) => updateLogo(index, "name", event.target.value)} /></Td><Td><input type="checkbox" checked={logo.showOnInvoice} onChange={(event) => updateLogo(index, "showOnInvoice", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnReceipt} onChange={(event) => updateLogo(index, "showOnReceipt", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnAgreement} onChange={(event) => updateLogo(index, "showOnAgreement", event.target.checked)} /></Td><Td><input type="checkbox" defaultChecked /></Td><Td><Input type="number" value={logo.order} onChange={(event) => updateLogo(index, "order", Number(event.target.value))} /></Td><Td><Select value={logo.size} onChange={(event) => updateLogo(index, "size", event.target.value)}><option>small</option><option>medium</option><option>large</option></Select></Td><Td><Button variant="outline" onClick={() => notify("Upload placeholder tersimpan. Supabase Storage siap dipakai setelah koneksi.")}>Upload/Replace</Button></Td></tr>)}</tbody></Table></Card>;
+  return <Card><SectionTitle title="Event Settings" subtitle="Konfigurasi multi-year, logo PDF 4-5 logo, stempel resmi, dan promo registrasi." /><form onSubmit={updateEvent} className="grid gap-4 md:grid-cols-2"><Field label="Nama event"><Input name="name" defaultValue={data.event.name} required /></Field><Field label="Tahun"><Input name="year" type="number" defaultValue={data.event.year} required /></Field><Field label="Judul lengkap"><Input name="fullTitle" defaultValue={data.event.fullTitle} required /></Field><Field label="Rekening bank"><Input name="bankAccount" defaultValue={data.event.bankAccount} /></Field><Field label="Contact person"><Input name="contactPerson" defaultValue={data.event.contactPerson} /></Field><Field label="Label stempel resmi"><Input name="stampLabel" defaultValue={data.event.stampLabel ?? "Stempel Resmi PERDESTI / PASS"} /></Field><div className="md:col-span-2 grid gap-2 rounded-lg border border-slate-200 p-4"><p className="font-semibold text-emeraldDeep">Tampilkan stempel pada dokumen</p><div className="grid gap-2 sm:grid-cols-4"><label><input name="showStampOnInvoice" type="checkbox" defaultChecked={data.event.showStampOnInvoice} /> Invoice</label><label><input name="showStampOnReceipt" type="checkbox" defaultChecked={data.event.showStampOnReceipt} /> Receipt</label><label><input name="showStampOnAgreement" type="checkbox" defaultChecked={data.event.showStampOnAgreement} /> Surat Sponsor</label><label><input name="showStampOnFormalDocuments" type="checkbox" defaultChecked={data.event.showStampOnFormalDocuments} /> Formal</label></div><Button type="button" variant="outline" onClick={() => notify("Upload stempel placeholder tersimpan. Hubungkan Supabase Storage untuk file asli.")}>Upload/Replace Stempel</Button></div><div className="md:col-span-2"><Field label="Disclaimer footer"><Textarea name="footerDisclaimer" defaultValue={data.event.footerDisclaimer} /></Field></div><div className="md:col-span-2 rounded-lg border border-slate-200 p-4"><h3 className="mb-3 text-lg font-bold text-emeraldDeep">Promo Settings</h3><div className="grid gap-4 md:grid-cols-2"><Field label="Promo name"><Input name="promoName" defaultValue={data.event.promoName} /></Field><Field label="Promo type"><Input name="promoType" defaultValue={data.event.promoType} /></Field><Field label="Start date"><Input name="promoStartDate" type="date" defaultValue={data.event.promoStartDate} /></Field><Field label="End date"><Input name="promoEndDate" type="date" defaultValue={data.event.promoEndDate} /></Field><Field label="Applies to categories"><Input name="promoCategories" defaultValue={data.event.promoCategories} /></Field><Field label="Minimum paid count"><Input name="promoMinimumPaidCount" type="number" defaultValue={data.event.promoMinimumPaidCount ?? 5} /></Field><Field label="Free count"><Input name="promoFreeCount" type="number" defaultValue={data.event.promoFreeCount ?? 1} /></Field><label className="flex items-center gap-2 pt-7"><input name="promoActive" type="checkbox" defaultChecked={data.event.promoActive} /> Promo aktif</label><div className="md:col-span-2"><Field label="Promo notes"><Textarea name="promoNotes" defaultValue={data.event.promoNotes} /></Field></div></div></div><div className="md:col-span-2"><Button type="submit"><Save size={16} /> Simpan Event Settings</Button></div></form><h3 className="mt-8 text-lg font-bold text-emeraldDeep">Logo Dokumen</h3><Table><thead><tr><Th>Logo</Th><Th>Invoice</Th><Th>Receipt</Th><Th>Surat</Th><Th>Formal</Th><Th>Order</Th><Th>Size</Th><Th>Upload</Th></tr></thead><tbody>{data.event.logos.map((logo, index) => <tr key={`${logo.name}-${index}`}><Td><Input value={logo.name} onChange={(event) => updateLogo(index, "name", event.target.value)} /></Td><Td><input type="checkbox" checked={logo.showOnInvoice} onChange={(event) => updateLogo(index, "showOnInvoice", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnReceipt} onChange={(event) => updateLogo(index, "showOnReceipt", event.target.checked)} /></Td><Td><input type="checkbox" checked={logo.showOnAgreement} onChange={(event) => updateLogo(index, "showOnAgreement", event.target.checked)} /></Td><Td><input type="checkbox" defaultChecked /></Td><Td><Input type="number" value={logo.order} onChange={(event) => updateLogo(index, "order", Number(event.target.value))} /></Td><Td><Select value={logo.size} onChange={(event) => updateLogo(index, "size", event.target.value)}><option>small</option><option>medium</option><option>large</option></Select></Td><Td><Button variant="outline" onClick={() => notify("Upload placeholder tersimpan. Supabase Storage siap dipakai setelah koneksi.")}>Upload/Replace</Button></Td></tr>)}</tbody></Table></Card>;
 }
 
 function VendorDetail({ vendor, data, onClose }: { vendor: Vendor; data: AppData; onClose: () => void }) {
-  return <div className="fixed inset-0 z-40 bg-slate-950/40 p-4"><div className="mx-auto max-h-[90vh] max-w-4xl overflow-y-auto rounded-xl bg-white p-5 shadow-soft"><SectionTitle title={`Detail Vendor - ${vendor.company}`} subtitle="Tab ringkas vendor, booth, benefits, file requirements, dan invoice." action={<Button variant="outline" onClick={onClose}>Tutup</Button>} /><div className="grid gap-4 md:grid-cols-2"><Card><p className="font-bold">Informasi Sponsor</p><p>PIC: {vendor.pic}</p><p>WA: {vendor.whatsapp}</p><p>Paket: {vendor.packageName} - {rupiah(vendor.packagePrice)}</p><p>Status: <Badge tone={tone(vendor.status)}>{vendor.status}</Badge></p></Card><Card><p className="font-bold">Booth</p><p>{vendor.boothNumber} ({vendor.boothSize})</p><p>{data.booths.find((item) => item.vendorId === vendor.id)?.area}</p></Card></div><div className="mt-5 grid gap-5"><Card><SectionTitle title="Benefits" /><ReportPreview rows={data.benefits.filter((item) => item.vendorId === vendor.id) as unknown as Record<string, unknown>[]} /></Card><Card><SectionTitle title="File Requirements" /><ReportPreview rows={data.files.filter((item) => item.vendorId === vendor.id) as unknown as Record<string, unknown>[]} /></Card></div></div></div>;
+  const invoices = data.invoices.filter((item) => item.vendorId === vendor.id);
+  const payments = data.payments.filter((payment) => invoices.some((invoice) => invoice.id === payment.invoiceId));
+  const benefits = data.benefits.filter((item) => item.vendorId === vendor.id);
+  const files = data.files.filter((item) => item.vendorId === vendor.id);
+  const docs = data.documents.filter((item) => item.relatedName === vendor.company);
+  const completed = benefits.filter((item) => ["Completed", "Not Applicable"].includes(item.status)).length;
+  const approvedFiles = files.filter((item) => ["Approved", "Not Required"].includes(item.status)).length;
+  const invoiceTotalAmount = invoices.reduce((sum, invoice) => sum + invoiceTotal(invoice), 0);
+  const paid = invoices.reduce((sum, invoice) => sum + verifiedPaid(invoice.id, data.payments), 0);
+  return (
+    <div className="fixed inset-0 z-40 bg-slate-950/40 p-3 sm:p-4">
+      <div className="mx-auto max-h-[92vh] max-w-6xl overflow-y-auto rounded-xl bg-white p-4 shadow-soft sm:p-5">
+        <SectionTitle title={`Detail Vendor - ${vendor.company}`} subtitle="Overview, invoice, payments, benefits, file requirements, agreement, booth, documents, activity, dan WhatsApp." action={<Button variant="outline" onClick={onClose}>Tutup</Button>} />
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <Card><p className="text-sm text-slate-500">Package Summary</p><p className="font-bold">{vendor.packageName}</p><p>{rupiah(vendor.packagePrice)}</p><p>{vendor.boothSize} - {vendor.boothNumber}</p></Card>
+          <Card><p className="text-sm text-slate-500">Payment Summary</p><p>Total: {rupiah(invoiceTotalAmount)}</p><p>Paid: {rupiah(paid)}</p><p>Outstanding: {rupiah(invoiceTotalAmount - paid)}</p></Card>
+          <Card><p className="text-sm text-slate-500">Benefit Completion</p><p className="text-2xl font-bold">{completed}/{benefits.length}</p><p>{benefits.length ? Math.round((completed / benefits.length) * 100) : 0}% complete</p></Card>
+          <Card><p className="text-sm text-slate-500">File Completeness</p><p className="text-2xl font-bold">{approvedFiles}/{files.length}</p><p>{files.filter((item) => item.status === "Missing").length} missing</p></Card>
+        </div>
+        <div className="mt-5 grid gap-5">
+          <Card><SectionTitle title="Overview" /><div className="grid gap-2 text-sm md:grid-cols-2"><p>PIC: {vendor.pic} ({vendor.position})</p><p>WhatsApp: {vendor.whatsapp}</p><p>Email: {vendor.email}</p><p>Handler: {vendor.handler}</p><p>Status: <Badge tone={tone(vendor.status)}>{vendor.status}</Badge></p><p>Agreement note: {vendor.notes}</p></div></Card>
+          <Card><SectionTitle title="Invoice" /><ReportPreview rows={invoices.map((invoice) => ({ number: invoice.number, total: invoiceTotal(invoice), paid: verifiedPaid(invoice.id, data.payments), status: invoice.status, dueDate: invoice.dueDate }))} /></Card>
+          <Card><SectionTitle title="Payments" /><ReportPreview rows={payments as unknown as Record<string, unknown>[]} /></Card>
+          <Card><SectionTitle title="Benefits" /><ReportPreview rows={benefits as unknown as Record<string, unknown>[]} /></Card>
+          <Card><SectionTitle title="File Requirements" /><ReportPreview rows={files as unknown as Record<string, unknown>[]} /></Card>
+          <Card><SectionTitle title="Agreement / Booth / Documents" /><ReportPreview rows={[{ agreement: data.letters.find((item) => item.vendorId === vendor.id)?.number ?? "-", booth: `${vendor.boothNumber} (${vendor.boothSize})`, documents: docs.length, specialNotes: vendor.notes }]} /></Card>
+          <Card><SectionTitle title="Activity Log" /><LogTable rows={data.logs.filter((log) => log.entityName.includes(vendor.company) || log.notes.includes(vendor.company)).slice(0, 8)} /></Card>
+          <Card><SectionTitle title="WhatsApp Messages" /><ReportPreview rows={data.messages.filter((message) => message.recipient === vendor.company) as unknown as Record<string, unknown>[]} /></Card>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function CrudModal({ modal, data, setData, close, notify, log }: { modal: ModalState; data: AppData; setData: (updater: (current: AppData) => AppData) => void; close: () => void; notify: (message: string) => void; log: (action: string, entityType: string, entityName: string, notes?: string) => void }) {
@@ -696,7 +800,7 @@ function renderFields(key: EditableKey, existing: Record<string, unknown> | unde
   if (key === "benefits") return <><Field label="Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? data.vendors[0]?.id)} {...common}>{vendorOptions}</Select></Field><Field label="Benefit Name"><Input name="name" defaultValue={String(existing?.name ?? "")} required {...common} /></Field><Field label="Quantity"><Input name="quantity" type="number" defaultValue={Number(existing?.quantity ?? 1)} {...common} /></Field><Field label="Due Date"><Input name="dueDate" type="date" defaultValue={String(existing?.dueDate ?? todayIdDate())} {...common} /></Field><Field label="Responsible"><Select name="responsible" defaultValue={String(existing?.responsible ?? data.committee[0]?.name)} {...common}>{committeeOptions}</Select></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Pending")} {...common}>{["Not Started", "Pending", "In Progress", "Completed", "Not Applicable"].map((item) => <option key={item}>{item}</option>)}</Select></Field><div className="md:col-span-2"><Field label="Description"><Textarea name="description" defaultValue={String(existing?.description ?? "")} {...common} /></Field></div><div className="md:col-span-2"><Field label="Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
   if (key === "files") return <><Field label="Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? data.vendors[0]?.id)} {...common}>{vendorOptions}</Select></Field><Field label="Requirement Name"><Input name="name" defaultValue={String(existing?.name ?? "")} required {...common} /></Field><Field label="Required"><Select name="required" defaultValue={String(existing?.required ?? true)} {...common}><option value="true">Ya</option><option value="false">Tidak</option></Select></Field><Field label="Uploaded"><Select name="uploaded" defaultValue={String(existing?.uploaded ?? false)} {...common}><option value="false">Belum</option><option value="true">Sudah</option></Select></Field><Field label="Due Date"><Input name="dueDate" type="date" defaultValue={String(existing?.dueDate ?? todayIdDate())} {...common} /></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Missing")} {...common}>{["Missing", "Submitted", "Under Review", "Approved", "Rejected", "Not Required"].map((item) => <option key={item}>{item}</option>)}</Select></Field><div className="md:col-span-2"><Field label="Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
   if (key === "invoices") return <><Field label="Invoice Number"><Input name="number" defaultValue={String(existing?.number ?? `${data.event.invoicePrefix}/${String(data.invoices.length + 1).padStart(3, "0")}`)} required {...common} /></Field><Field label="Bill To"><Input name="billTo" defaultValue={String(existing?.billTo ?? data.vendors[0]?.company ?? "")} required {...common} /></Field><Field label="Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? data.vendors[0]?.id)} {...common}><option value="">-</option>{vendorOptions}</Select></Field><Field label="PIC Contact"><Input name="picContact" defaultValue={String(existing?.picContact ?? "")} {...common} /></Field><Field label="Invoice Date"><Input name="invoiceDate" type="date" defaultValue={String(existing?.invoiceDate ?? todayIdDate())} {...common} /></Field><Field label="Due Date"><Input name="dueDate" type="date" defaultValue={String(existing?.dueDate ?? data.event.finalPaymentDeadline)} {...common} /></Field><Field label="Item Description"><Input name="description" defaultValue={String((existing?.items as Invoice["items"] | undefined)?.[0]?.description ?? "Paket Sponsor PASS RIAU")} required {...common} /></Field><Field label="Unit Price"><Input name="unitPrice" type="number" defaultValue={Number((existing?.items as Invoice["items"] | undefined)?.[0]?.unitPrice ?? 0)} required {...common} /></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Draft")} {...common}>{["Draft", "Sent", "DP Paid", "Partially Paid", "Paid", "Overdue", "Cancelled"].map((item) => <option key={item}>{item}</option>)}</Select></Field><Field label="Handled By"><Select name="handledBy" defaultValue={String(existing?.handledBy ?? data.committee[0]?.name)} {...common}>{committeeOptions}</Select></Field></>;
-  if (key === "payments") return <><Field label="Invoice"><Select name="invoiceId" defaultValue={String(existing?.invoiceId ?? data.invoices[0]?.id)} {...common}>{invoiceOptions}</Select></Field><Field label="Payment Date"><Input name="date" type="date" defaultValue={String(existing?.date ?? todayIdDate())} {...common} /></Field><Field label="Amount"><Input name="amount" type="number" defaultValue={Number(existing?.amount ?? 0)} required {...common} /></Field><Field label="Method"><Input name="method" defaultValue={String(existing?.method ?? "Transfer Bank")} {...common} /></Field><Field label="Receiving Bank"><Input name="receivingBank" defaultValue={String(existing?.receivingBank ?? "Bank Mandiri")} {...common} /></Field><Field label="Sender Name"><Input name="senderName" defaultValue={String(existing?.senderName ?? "")} required {...common} /></Field><Field label="Verification Status"><Select name="verificationStatus" defaultValue={String(existing?.verificationStatus ?? "Pending")} {...common}><option>Pending</option><option>Verified</option><option>Rejected</option></Select></Field><Field label="Received By"><Select name="receivedBy" defaultValue={String(existing?.receivedBy ?? data.committee[0]?.name)} {...common}>{committeeOptions}</Select></Field><div className="md:col-span-2"><Field label="Notes / Proof Placeholder"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
+  if (key === "payments") return <><Field label="Billing Target Type"><Select name="targetType" defaultValue={String(existing?.targetType ?? "Vendor / Sponsor")} {...common}><option>Vendor / Sponsor</option><option>Participant</option><option>Group Registration</option><option>Custom / Other</option></Select></Field><Field label="Linked Vendor"><Select name="linkedVendorId" defaultValue={String(existing?.linkedEntityId ?? "")} {...common}><option value="">-</option>{vendorOptions}</Select></Field><Field label="Linked Participant"><Select name="linkedParticipantId" defaultValue={String(existing?.linkedEntityId ?? "")} {...common}><option value="">-</option>{data.participants.map((participant) => <option key={participant.id} value={participant.id}>{participant.fullName}</option>)}</Select></Field><Field label="Manual payer / Custom"><Input name="manualPayer" defaultValue={String(existing?.linkedEntityName ?? existing?.senderName ?? "")} {...common} /></Field><Field label="Linked Invoice"><Select name="invoiceId" defaultValue={String(existing?.invoiceId ?? data.invoices[0]?.id)} {...common}>{invoiceOptions}</Select></Field><Field label="Linked Sponsor Agreement"><Select name="linkedAgreementId" defaultValue={String(existing?.linkedAgreementId ?? "")} {...common}><option value="">-</option>{data.letters.map((letter) => <option key={letter.id} value={letter.id}>{letter.number}</option>)}</Select></Field><Field label="Linked Booth Booking"><Select name="linkedBoothId" defaultValue={String(existing?.linkedBoothId ?? "")} {...common}><option value="">-</option>{data.booths.map((booth) => <option key={booth.id} value={booth.id}>{booth.number}</option>)}</Select></Field><Field label="Payment Date"><Input name="date" type="date" defaultValue={String(existing?.date ?? todayIdDate())} {...common} /></Field><Field label="Amount"><Input name="amount" type="number" defaultValue={Number(existing?.amount ?? 0)} required {...common} /></Field><Field label="Method"><Input name="method" defaultValue={String(existing?.method ?? "Transfer Bank")} {...common} /></Field><Field label="Receiving Bank"><Input name="receivingBank" defaultValue={String(existing?.receivingBank ?? "Bank Mandiri")} {...common} /></Field><Field label="Sender Name"><Input name="senderName" defaultValue={String(existing?.senderName ?? "")} required {...common} /></Field><Field label="Verification Status"><Select name="verificationStatus" defaultValue={String(existing?.verificationStatus ?? "Pending")} {...common}><option>Pending</option><option>Verified</option><option>Rejected</option></Select></Field><Field label="Received By"><Select name="receivedBy" defaultValue={String(existing?.receivedBy ?? data.committee[0]?.name)} {...common}>{committeeOptions}</Select></Field><Field label="Verified By"><Select name="verifiedBy" defaultValue={String(existing?.verifiedBy ?? "")} {...common}><option value="">-</option>{committeeOptions}</Select></Field><div className="md:col-span-2"><Field label="Proof Upload Placeholder / Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div><div className="md:col-span-2"><Field label="Special Agreement / Additional Notes"><Textarea name="specialAgreement" defaultValue={String(existing?.specialAgreement ?? "")} {...common} /></Field></div></>;
   if (key === "archive") return <><Field label="Document Name"><Input name="name" defaultValue={String(existing?.name ?? "")} required {...common} /></Field><Field label="Type"><Input name="type" defaultValue={String(existing?.type ?? "Custom Document")} {...common} /></Field><Field label="Related Name"><Input name="relatedName" defaultValue={String(existing?.relatedName ?? "")} {...common} /></Field><Field label="Status"><Select name="status" defaultValue={String(existing?.status ?? "Uploaded")} {...common}>{["Draft", "Uploaded", "Pending Review", "Approved", "Rejected", "Archived"].map((item) => <option key={item}>{item}</option>)}</Select></Field><div className="md:col-span-2"><Field label="Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
   if (key === "agreement") return <><Field label="Vendor"><Select name="vendorId" defaultValue={String(existing?.vendorId ?? data.vendors[0]?.id)} {...common}>{vendorOptions}</Select></Field><Field label="Letter Number"><Input name="number" defaultValue={String(existing?.number ?? `${data.event.agreementPrefix}/${String(data.letters.length + 1).padStart(3, "0")}`)} required {...common} /></Field><Field label="Company Signer"><Input name="signerName" defaultValue={String(existing?.signerName ?? "")} required {...common} /></Field><Field label="Signer Role"><Input name="signerRole" defaultValue={String(existing?.signerRole ?? "")} {...common} /></Field><Field label="Committee Signer"><Input name="committeeSignerName" defaultValue={String(existing?.committeeSignerName ?? data.event.contactPerson)} {...common} /></Field><Field label="Committee Role"><Input name="committeeSignerRole" defaultValue={String(existing?.committeeSignerRole ?? "Panitia PASS RIAU")} {...common} /></Field><Field label="City/date"><Input name="cityDate" defaultValue={String(existing?.cityDate ?? `Pekanbaru, ${todayIdDate()}`)} {...common} /></Field><div className="md:col-span-2"><Field label="Notes"><Textarea name="notes" defaultValue={String(existing?.notes ?? "")} {...common} /></Field></div></>;
   return <><Field label="Recipient"><Input name="recipient" defaultValue={String(existing?.recipient ?? "")} required {...common} /></Field><Field label="Phone"><Input name="phone" defaultValue={String(existing?.phone ?? "")} {...common} /></Field><Field label="Type"><Input name="type" defaultValue={String(existing?.type ?? "Custom Message")} {...common} /></Field><div className="md:col-span-2"><Field label="Message"><Textarea name="text" defaultValue={String(existing?.text ?? "")} required {...common} /></Field></div></>;
@@ -731,7 +835,16 @@ function buildRecord(key: EditableKey, form: FormData, existing: Record<string, 
   if (key === "benefits") return { ok: true, name: fieldValue(form.get("name")), record: { ...existing, id, vendorId: fieldValue(form.get("vendorId")), name: fieldValue(form.get("name")), description: fieldValue(form.get("description")), quantity: Number(form.get("quantity")), dueDate: fieldValue(form.get("dueDate")), responsible: fieldValue(form.get("responsible")), status: fieldValue(form.get("status")), notes: fieldValue(form.get("notes")), demo: existing?.demo } };
   if (key === "files") return { ok: true, name: fieldValue(form.get("name")), record: { ...existing, id, vendorId: fieldValue(form.get("vendorId")), name: fieldValue(form.get("name")), required: form.get("required") === "true", uploaded: form.get("uploaded") === "true", dueDate: fieldValue(form.get("dueDate")), status: fieldValue(form.get("status")), reviewedBy: fieldValue(form.get("status")) === "Approved" ? data.event.contactPerson : String(existing?.reviewedBy ?? ""), notes: fieldValue(form.get("notes")), demo: existing?.demo } };
   if (key === "invoices") return { ok: true, name: fieldValue(form.get("number")), record: { ...existing, id, number: fieldValue(form.get("number")), type: "Vendor sponsorship", billTo: fieldValue(form.get("billTo")), picContact: fieldValue(form.get("picContact")), invoiceDate: fieldValue(form.get("invoiceDate")), dueDate: fieldValue(form.get("dueDate")), items: [{ description: fieldValue(form.get("description")), qty: 1, unitPrice: Number(form.get("unitPrice")), discount: 0 }], dpPaid: verifiedPaid(id, data.payments), status: fieldValue(form.get("status")), registeredBy: currentUser, receivedBy: data.event.contactPerson, handledBy: fieldValue(form.get("handledBy")), notes: "", vendorId: fieldValue(form.get("vendorId")) || undefined, demo: existing?.demo } };
-  if (key === "payments") return { ok: true, name: fieldValue(form.get("senderName")), record: { ...existing, id, invoiceId: fieldValue(form.get("invoiceId")), date: fieldValue(form.get("date")), amount: Number(form.get("amount")), method: fieldValue(form.get("method")), receivingBank: fieldValue(form.get("receivingBank")), senderName: fieldValue(form.get("senderName")), receivedBy: fieldValue(form.get("receivedBy")), verificationStatus: fieldValue(form.get("verificationStatus")), notes: fieldValue(form.get("notes")), demo: existing?.demo } };
+  if (key === "payments") {
+    const targetType = fieldValue(form.get("targetType")) as Payment["targetType"];
+    const linkedEntityId = targetType === "Participant" ? fieldValue(form.get("linkedParticipantId")) : targetType === "Vendor / Sponsor" ? fieldValue(form.get("linkedVendorId")) : "";
+    const linkedEntityName = targetType === "Participant"
+      ? data.participants.find((participant) => participant.id === linkedEntityId)?.fullName
+      : targetType === "Vendor / Sponsor"
+        ? data.vendors.find((vendor) => vendor.id === linkedEntityId)?.company
+        : fieldValue(form.get("manualPayer"));
+    return { ok: true, name: fieldValue(form.get("senderName")), record: { ...existing, id, targetType, linkedEntityId, linkedEntityName, linkedAgreementId: fieldValue(form.get("linkedAgreementId")) || undefined, linkedBoothId: fieldValue(form.get("linkedBoothId")) || undefined, invoiceId: fieldValue(form.get("invoiceId")), date: fieldValue(form.get("date")), amount: Number(form.get("amount")), method: fieldValue(form.get("method")), receivingBank: fieldValue(form.get("receivingBank")), senderName: fieldValue(form.get("senderName")), receivedBy: fieldValue(form.get("receivedBy")), verifiedBy: fieldValue(form.get("verifiedBy")) || undefined, verificationStatus: fieldValue(form.get("verificationStatus")), notes: fieldValue(form.get("notes")), specialAgreement: fieldValue(form.get("specialAgreement")), demo: existing?.demo } };
+  }
   if (key === "archive") return { ok: true, name: fieldValue(form.get("name")), record: { ...existing, id, name: fieldValue(form.get("name")), type: fieldValue(form.get("type")), relatedName: fieldValue(form.get("relatedName")), status: fieldValue(form.get("status")), createdAt: String(existing?.createdAt ?? new Date().toISOString()), notes: fieldValue(form.get("notes")), demo: existing?.demo } };
   if (key === "agreement") return { ok: true, name: fieldValue(form.get("number")), record: { ...existing, id, vendorId: fieldValue(form.get("vendorId")), number: fieldValue(form.get("number")), signerName: fieldValue(form.get("signerName")), signerRole: fieldValue(form.get("signerRole")), committeeSignerName: fieldValue(form.get("committeeSignerName")), committeeSignerRole: fieldValue(form.get("committeeSignerRole")), cityDate: fieldValue(form.get("cityDate")), notes: fieldValue(form.get("notes")), demo: existing?.demo } };
   if (key === "whatsapp") return { ok: true, name: fieldValue(form.get("recipient")), record: { ...existing, id, recipient: fieldValue(form.get("recipient")), phone: fieldValue(form.get("phone")), type: fieldValue(form.get("type")), text: fieldValue(form.get("text")), demo: existing?.demo } };
@@ -782,6 +895,20 @@ function getReportRows(report: string, data: AppData): Record<string, unknown>[]
   if (report.includes("Committee")) return data.committee.map((member) => ({ member: member.name, role: member.role, vendorsHandled: data.vendors.filter((vendor) => vendor.handler === member.name).length, paymentsReceived: data.payments.filter((payment) => payment.receivedBy === member.name).length })) as unknown as Record<string, unknown>[];
   if (report.includes("Activity")) return data.logs as unknown as Record<string, unknown>[];
   if (report.includes("Sponsor agreement")) return data.letters.map((letter) => ({ ...letter, vendor: data.vendors.find((vendor) => vendor.id === letter.vendorId)?.company ?? "-" })) as unknown as Record<string, unknown>[];
+  if (report.includes("Promo usage")) {
+    const grouped = data.participants.filter((participant) => participant.groupReference);
+    const paid = grouped.filter((participant) => participant.promoRole !== "Free");
+    const free = grouped.filter((participant) => participant.promoRole === "Free");
+    return [{
+      promoName: data.event.promoName,
+      validUntil: data.event.promoEndDate,
+      eligibleGroupRegistrations: new Set(grouped.map((participant) => participant.groupReference)).size,
+      paidParticipants: paid.length,
+      freeParticipants: free.length,
+      promoDeduction: free.length * 1500000,
+      notes: data.event.promoNotes
+    }];
+  }
   return [];
 }
 
@@ -823,6 +950,17 @@ function drawPdfFooter(doc: any, event: EventSettings) {
   doc.text(event.footerDisclaimer, 14, 291, { maxWidth: 180 });
 }
 
+function drawStamp(doc: any, event: EventSettings, x: number, y: number, show = true) {
+  if (!show) return;
+  doc.setDrawColor(200, 164, 93);
+  doc.setFillColor(255, 255, 255);
+  doc.roundedRect(x, y, 32, 22, 2, 2, "FD");
+  doc.setTextColor(7, 94, 84);
+  doc.setFontSize(7);
+  doc.text(event.stampLabel ?? "Stempel Resmi", x + 16, y + 9, { align: "center", maxWidth: 28 });
+  doc.text("STAMP", x + 16, y + 17, { align: "center" });
+}
+
 function drawInvoicePdf(doc: any, data: AppData, invoice: Invoice, vendor?: Vendor) {
   const total = invoiceTotal(invoice);
   const paid = verifiedPaid(invoice.id, data.payments);
@@ -832,16 +970,22 @@ function drawInvoicePdf(doc: any, data: AppData, invoice: Invoice, vendor?: Vend
   doc.text(`Tanggal: ${invoice.invoiceDate}`, 14, 90);
   doc.text(`Jatuh Tempo: ${invoice.dueDate}`, 14, 96);
   doc.text(`Status: ${invoice.status}`, 150, 84);
-  doc.autoTable({ startY: 106, theme: "grid", head: [["Bill To", "Event / Booth"]], body: [[`${invoice.billTo}\nPIC: ${invoice.picContact}\nWA: ${vendor?.whatsapp ?? "-"}\nEmail: ${vendor?.email ?? "-"}`, `${data.event.dateRange}\n${data.event.symposium}\nBooth: ${vendor?.boothNumber ?? "-"}`]], headStyles: { fillColor: [7, 94, 84] }, styles: { fontSize: 9, cellPadding: 3 } });
-  doc.autoTable({ startY: doc.lastAutoTable.finalY + 8, theme: "grid", head: [["Description", "Qty", "Unit Price", "Discount", "Total"]], body: invoice.items.map((item) => [item.description, item.qty, rupiah(item.unitPrice), rupiah(item.discount), rupiah(item.qty * item.unitPrice - item.discount)]), headStyles: { fillColor: [7, 94, 84] }, styles: { fontSize: 9 } });
-  doc.autoTable({ startY: doc.lastAutoTable.finalY + 8, theme: "grid", body: [["Subtotal", rupiah(total)], ["Total Paid Verified", rupiah(paid)], ["Pending Payment", rupiah(pendingPaid(invoice.id, data.payments))], ["Remaining Balance", rupiah(total - paid)], ["Bank / Terms", `${data.event.bankAccount}\n${data.event.defaultTerms}`]], styles: { fontSize: 9 }, columnStyles: { 0: { fontStyle: "bold", fillColor: [238, 246, 243] } } });
+  doc.autoTable({ startY: 106, theme: "grid", head: [["Bill To / Customer", "Event / Package / Booth"]], body: [[`${invoice.billTo}\nPIC: ${invoice.picContact}\nWA: ${vendor?.whatsapp ?? "-"}\nEmail: ${vendor?.email ?? "-"}\nAddress: ${vendor ? "Sesuai data vendor" : "-"}`, `${data.event.dateRange}\n${data.event.symposium}\nPackage: ${vendor?.packageName ?? invoice.type}\nBooth: ${vendor?.boothNumber ?? "-"} (${vendor?.boothSize ?? "-"})`]], headStyles: { fillColor: [7, 94, 84], textColor: 255 }, styles: { fontSize: 9, cellPadding: 3, lineColor: [220, 225, 225] } });
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 7, theme: "grid", head: [["Item Description", "Qty", "Unit Price", "Discount", "Total"]], body: invoice.items.map((item) => [item.description, item.qty, rupiah(item.unitPrice), rupiah(item.discount), rupiah(item.qty * item.unitPrice - item.discount)]), headStyles: { fillColor: [7, 94, 84], textColor: 255 }, styles: { fontSize: 9, cellPadding: 3 }, columnStyles: { 0: { cellWidth: 82 }, 4: { halign: "right" } } });
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 7, theme: "grid", body: [["Subtotal", rupiah(total)], ["Discount", rupiah(invoice.items.reduce((sum, item) => sum + Number(item.discount), 0))], ["Grand Total", rupiah(total)], ["Total Paid Verified", rupiah(paid)], ["Pending Payment", rupiah(pendingPaid(invoice.id, data.payments))], ["Remaining Balance", rupiah(total - paid)], ["Payment Terms", `${data.event.bankAccount}\n${data.event.defaultTerms}\nFinal deadline: ${data.event.finalPaymentDeadline}`]], styles: { fontSize: 9, cellPadding: 3 }, columnStyles: { 0: { fontStyle: "bold", fillColor: [238, 246, 243], cellWidth: 52 }, 1: { halign: "right" } } });
   const benefits = data.benefits.filter((benefit) => benefit.vendorId === invoice.vendorId);
-  if (benefits.length) doc.autoTable({ startY: doc.lastAutoTable.finalY + 8, theme: "grid", head: [["Benefit", "Qty", "Status / Notes"]], body: benefits.map((benefit) => [benefit.name, benefit.quantity, `${benefit.status} - ${benefit.notes}`]), headStyles: { fillColor: [7, 94, 84] }, styles: { fontSize: 8 } });
-  const y = Math.min((doc.lastAutoTable?.finalY ?? 210) + 12, 238);
+  if (benefits.length) doc.autoTable({ startY: doc.lastAutoTable.finalY + 7, theme: "grid", head: [["Benefit Included", "Qty", "Delivered Status / Notes"]], body: benefits.map((benefit) => [benefit.name, benefit.quantity, `${benefit.status} - ${benefit.notes}`]), headStyles: { fillColor: [7, 94, 84], textColor: 255 }, styles: { fontSize: 8, cellPadding: 2.5 } });
+  doc.autoTable({ startY: doc.lastAutoTable.finalY + 7, theme: "grid", head: [["Notes / Special Agreement"]], body: [[`${invoice.notes || vendor?.notes || "-"}\n${data.event.promoNotes ?? ""}`]], headStyles: { fillColor: [200, 164, 93], textColor: 255 }, styles: { fontSize: 8.5, cellPadding: 3 } });
+  const y = Math.min((doc.lastAutoTable?.finalY ?? 210) + 10, 235);
+  doc.setFontSize(8.5);
   doc.text(`Registered by: ${invoice.registeredBy}`, 14, y);
-  doc.text(`Received by: ${invoice.receivedBy}`, 14, y + 6);
-  doc.text("Prepared by", 140, y);
-  doc.text("Finance/Bendahara", 140, y + 32);
+  doc.text(`Received by: ${invoice.receivedBy}`, 14, y + 5);
+  doc.text(`Handled by: ${invoice.handledBy}`, 14, y + 10);
+  doc.text("Prepared by", 112, y);
+  doc.text("Finance/Bendahara", 112, y + 32);
+  doc.text("Verified by", 152, y);
+  doc.text(data.event.contactPerson, 152, y + 32);
+  drawStamp(doc, data.event, 75, y - 2, data.event.showStampOnInvoice);
 }
 
 function drawReceiptPdf(doc: any, data: AppData, payment: Payment, invoice: Invoice) {
@@ -850,6 +994,7 @@ function drawReceiptPdf(doc: any, data: AppData, payment: Payment, invoice: Invo
   doc.text("Receipt ini valid setelah verifikasi oleh Finance/Bendahara.", 14, 220);
   doc.text("Bendahara / Finance", 140, 230);
   doc.text("(signature placeholder)", 140, 254);
+  drawStamp(doc, data.event, 92, 226, data.event.showStampOnReceipt);
 }
 
 function drawAgreementPdf(doc: any, data: AppData, vendor: Vendor, letter: SponsorLetter) {
@@ -868,6 +1013,7 @@ function drawAgreementPdf(doc: any, data: AppData, vendor: Vendor, letter: Spons
   doc.text(letter.signerRole, 20, y + 48);
   doc.text(letter.committeeSignerName, 125, y + 42);
   doc.text(letter.committeeSignerRole, 125, y + 48);
+  drawStamp(doc, data.event, 86, y + 18, data.event.showStampOnAgreement);
 }
 
 function drawBenefitPdf(doc: any, data: AppData, vendor: Vendor) {

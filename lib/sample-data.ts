@@ -48,6 +48,20 @@ eventSettings.dpPercentage = eventSettings.defaultDpPercentage;
 eventSettings.finalDeadline = eventSettings.finalPaymentDeadline;
 eventSettings.disclaimer = eventSettings.footerDisclaimer;
 eventSettings.paymentTerms = eventSettings.defaultTerms;
+eventSettings.stampLabel = "Stempel Resmi PERDESTI / PASS";
+eventSettings.showStampOnInvoice = true;
+eventSettings.showStampOnReceipt = true;
+eventSettings.showStampOnAgreement = true;
+eventSettings.showStampOnFormalDocuments = true;
+eventSettings.promoName = "5 Peserta Dokter Free 1";
+eventSettings.promoType = "Group Registration";
+eventSettings.promoStartDate = "2026-01-01";
+eventSettings.promoEndDate = "2026-06-30";
+eventSettings.promoCategories = "Member PERDESTI, Non-member PERDESTI, Dokter Umum";
+eventSettings.promoMinimumPaidCount = 5;
+eventSettings.promoFreeCount = 1;
+eventSettings.promoActive = true;
+eventSettings.promoNotes = "Promo group registration 5 peserta dokter berbayar mendapatkan 1 peserta free. Berlaku hingga 30 Juni 2026.";
 
 export const committeeMembers: CommitteeMember[] = [
   { id: "cm-1", name: "dr. Maya Pratiwi, Sp.D.V.E", role: "Ketua Panitia", whatsapp: "081276540001", email: "maya@passriau.id", active: true, accessRole: "Owner" },
@@ -158,6 +172,13 @@ export const participants: Participant[] = [
   { id: "par-3", fullName: "Nadia Salsabila", title: "Koas", institution: "Universitas Abdurrab", whatsapp: "081300001003", email: "nadia@example.com", category: "Internship / Koas / Mahasiswa", perdestiMember: false, symposium: true, workshop: false, workshopType: "-", pricingType: "Group", paymentStatus: "DP Paid", badgeStatus: "Belum Cetak", certificateStatus: "Belum Terbit", attendanceStatus: "Belum Hadir" }
 ];
 
+participants.forEach((participant, index) => {
+  if (participant.pricingType === "Group") {
+    participant.groupReference = "GRP-PASS-2026-001";
+    participant.promoRole = index === 2 ? "Free" : "Paid";
+  }
+});
+
 export const invoices: Invoice[] = [
   {
     id: "inv-1",
@@ -210,6 +231,10 @@ export const payments: Payment[] = [
 payments.forEach((payment) => {
   payment.sender = payment.senderName;
   payment.bank = payment.receivingBank;
+  payment.targetType = "Vendor / Sponsor";
+  payment.linkedEntityId = invoices.find((invoice) => invoice.id === payment.invoiceId)?.vendorId;
+  payment.linkedEntityName = payment.senderName;
+  payment.specialAgreement = payment.notes;
 });
 
 export const activityLogs: ActivityLog[] = [

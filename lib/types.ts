@@ -39,6 +39,20 @@ export type EventSettings = {
   finalDeadline?: string;
   disclaimer?: string;
   paymentTerms?: string;
+  stampLabel?: string;
+  showStampOnInvoice?: boolean;
+  showStampOnReceipt?: boolean;
+  showStampOnAgreement?: boolean;
+  showStampOnFormalDocuments?: boolean;
+  promoName?: string;
+  promoType?: string;
+  promoStartDate?: string;
+  promoEndDate?: string;
+  promoCategories?: string;
+  promoMinimumPaidCount?: number;
+  promoFreeCount?: number;
+  promoActive?: boolean;
+  promoNotes?: string;
 };
 
 export type CommitteeMember = {
@@ -118,6 +132,9 @@ export type Participant = {
   badgeStatus: string;
   certificateStatus: string;
   attendanceStatus: string;
+  groupReference?: string;
+  promoRole?: "Paid" | "Free";
+  invoiceId?: string;
 };
 
 export type Booth = {
@@ -168,6 +185,12 @@ export type Payment = {
   notes: string;
   sender?: string;
   bank?: string;
+  targetType?: "Vendor / Sponsor" | "Participant" | "Group Registration" | "Custom / Other";
+  linkedEntityId?: string;
+  linkedEntityName?: string;
+  linkedAgreementId?: string;
+  linkedBoothId?: string;
+  specialAgreement?: string;
 };
 
 export type ActivityLog = {
